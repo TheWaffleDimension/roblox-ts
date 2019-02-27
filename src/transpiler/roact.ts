@@ -141,10 +141,11 @@ function getConstructor(node: ts.ClassDeclaration | ts.ClassExpression) {
 export function transpileRoactClassDeclaration(
 	state: TranspilerState,
 	type: "Component" | "PureComponent",
-	className: string,
+	className: Array<string>,
 	node: ts.ClassDeclaration | ts.ClassExpression,
 ) {
-	let declaration = `${state.indent}local ${className} = Roact.${type}:extend("${className}");\n`;
+	const result = new Array<string>();
+	result.push(state.indent, `local ${className} = Roact.${type}:extend("${className}");\n`);
 
 	const instanceProps = node
 		.getInstanceProperties()
@@ -181,7 +182,7 @@ export function transpileRoactClassDeclaration(
 
 		getParameterData(state, paramNames, initializers, constructor, defaults);
 
-		declaration += `${state.indent}function ${className}:init(${paramNames.join(", ")})\n`;
+		result += `${state.indent}function ${className}:init(${paramNames.join(", ")})\n`;
 
 		state.pushIndent();
 
@@ -189,13 +190,13 @@ export function transpileRoactClassDeclaration(
 		if (ts.TypeGuards.isBlock(body)) {
 			// we can ignore super() as it's not required.
 			if (ts.TypeGuards.isBlock(body)) {
-				defaults.forEach(initializer => (declaration += state.indent + initializer + "\n"));
+				defaults.forEach(initializer => (result += state.indent + initializer + "\n"));
 
 				const bodyStatements = body.getStatements();
 				let k = 0;
 
-				initializers.forEach(initializer => (declaration += state.indent + initializer + "\n"));
-				extraInitializers.forEach(initializer => (declaration += state.indent + initializer + "\n"));
+				initializers.forEach(initializer => (result += state.indent + initializer + "\n"));
+				extraInitializers.forEach(initializer => (result += state.indent + initializer + "\n"));
 
 				for (; k < bodyStatements.length; ++k) {
 					const bodyStatement = bodyStatements[k];
@@ -203,7 +204,7 @@ export function transpileRoactClassDeclaration(
 					// Because we want to ignore super. I will figure out a better way to do this eventually.
 					// isSuperExpression doesn't seem to work.
 					if (!bodyStatement.getText().startsWith("super")) {
-						declaration += transpileStatement(state, bodyStatement);
+						result += transpileStatement(state, bodyStatement);
 					}
 				}
 
@@ -221,7 +222,7 @@ export function transpileRoactClassDeclaration(
 
 		state.popIndent();
 
-		declaration += `${state.indent}end;\n`;
+		result += `${state.indent}end;\n`;
 	}
 
 	const staticFields = node.getStaticProperties();
@@ -230,7 +231,7 @@ export function transpileRoactClassDeclaration(
 			const initializer = staticField.getInitializer();
 			if (initializer) {
 				checkRoactReserved(className, staticField.getName(), staticField);
-				declaration += `${state.indent}${className}.${staticField.getName()} = ${transpileExpression(
+				result += `${state.indent}${className}.${staticField.getName()} = ${transpileExpression(
 					state,
 					initializer,
 				)};\n`;
@@ -251,16 +252,16 @@ export function transpileRoactClassDeclaration(
 		getParameterData(state, paramNames, initializers, staticMethod);
 		const paramStr = paramNames.join(", ");
 
-		declaration += `${state.indent}function ${className}.${name}(${paramStr})\n`;
+		result += `${state.indent}function ${className}.${name}(${paramStr})\n`;
 
 		state.pushIndent();
 		if (ts.TypeGuards.isBlock(body)) {
-			initializers.forEach(initializer => (declaration += state.indent + initializer + "\n"));
-			declaration += transpileBlock(state, body);
+			initializers.forEach(initializer => (result += state.indent + initializer + "\n"));
+			result += transpileBlock(state, body);
 		}
 		state.popIndent();
 
-		declaration += `${state.indent}end;\n`;
+		result += `${state.indent}end;\n`;
 	}
 
 	// Now we'll get the methods, and make them into the special roact format
@@ -279,16 +280,16 @@ export function transpileRoactClassDeclaration(
 		getParameterData(state, paramNames, initializers, method);
 		const paramStr = paramNames.join(", ");
 
-		declaration += `${state.indent}function ${className}:${name}(${paramStr})\n`;
+		result += `${state.indent}function ${className}:${name}(${paramStr})\n`;
 
 		state.pushIndent();
 		if (ts.TypeGuards.isBlock(body)) {
-			initializers.forEach(initializer => (declaration += state.indent + initializer + "\n"));
-			declaration += transpileBlock(state, body);
+			initializers.forEach(initializer => (result += state.indent + initializer + "\n"));
+			result += transpileBlock(state, body);
 		}
 		state.popIndent();
 
-		declaration += `${state.indent}end;\n`;
+		result += `${state.indent}end;\n`;
 	}
 
 	const getters = node
@@ -305,7 +306,7 @@ export function transpileRoactClassDeclaration(
 		throw new TranspilerError("Roact does not support setters", node, TranspilerErrorType.RoactSettersNotAllowed);
 	}
 
-	return declaration;
+	return result;
 }
 
 function transpileSymbolPropertyCallback(state: TranspilerState, node: ts.Expression) {
@@ -548,7 +549,7 @@ export function generateRoactElement(
 					if (isRoactElementType(returnType)) {
 						if (isArrayType(returnType)) {
 							// Roact.Element[]
-							extraChildrenCollection.push(state.indent + transpileExpression(state, expression));
+							extraChildrenCollection.push(state.indent, ...transpileExpression(state, expression));
 						} else {
 							// Roact.Element
 							extraChildrenCollection.push(
@@ -567,7 +568,7 @@ export function generateRoactElement(
 					for (const definitionNode of definitionNodes) {
 						const type = definitionNode.getType();
 						if (isRoactElementType(type)) {
-							extraChildrenCollection.push(state.indent + transpileExpression(state, expression));
+							extraChildrenCollection.push(state.indent, ...transpileExpression(state, expression));
 						} else {
 							throw new TranspilerError(
 								`Roact does not support identifiers that have the return type ` + type.getText(),

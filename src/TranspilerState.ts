@@ -34,46 +34,47 @@ export class TranspilerState {
 	public getNewId() {
 		const sum = this.idStack.reduce((accum, value) => accum + value);
 		this.idStack[this.idStack.length - 1]++;
-		return `_${sum}`;
+		return ["_", sum.toString()];
 	}
 
 	// hoist stack
-	public hoistStack = new Array<Set<string>>();
+	public hoistStack = new Array<Array<Array<string>>>();
 
-	public pushHoistStack(name: string) {
-		this.hoistStack[this.hoistStack.length - 1].add(name);
+	public pushHoistStack(name: Array<string>) {
+		this.hoistStack[this.hoistStack.length - 1].push(name);
 	}
 
-	public popHoistStack(result: string) {
+	public popHoistStack(result: Array<string>) {
 		const top = this.hoistStack.pop();
 		if (top) {
-			const hoists = [...top];
+			// const hoists = [...top];
 			const namedHoists = new Array<string>();
 			const declareHoists = new Array<string>();
-			hoists.forEach(v => (v.includes("=") ? declareHoists : namedHoists).push(v));
+
+			// TODO
+			// hoists.forEach(v => (v.includes("=") ? declareHoists : namedHoists).push(v));
 
 			if (namedHoists && namedHoists.length > 0) {
-				result = this.indent + `local ${namedHoists.join(", ")};\n` + result;
+				result.unshift(this.indent + `local ${namedHoists.join(", ")};\n`);
 			}
 
 			if (declareHoists && declareHoists.length > 0) {
-				result = this.indent + `${declareHoists.join(";\n" + this.indent)};\n` + result;
+				result.unshift(this.indent + `${declareHoists.join(";\n" + this.indent)};\n`);
 			}
 		}
-		return result;
 	}
 
 	// export stack
-	public exportStack = new Array<Set<string>>();
+	public exportStack = new Array<Array<Array<string>>>();
 
-	public pushExport(name: string, node: ts.Node & ts.ExportableNode) {
+	public pushExport(name: Array<string>, node: ts.Node & ts.ExportableNode) {
 		if (!node.hasExportKeyword()) {
 			return;
 		}
 
 		const ancestorName = this.getExportContextName(node);
-		const alias = node.isDefaultExport() ? "_default" : name;
-		this.exportStack[this.exportStack.length - 1].add(`${ancestorName}.${alias} = ${name};\n`);
+		const alias = node.isDefaultExport() ? ["_default"] : name;
+		this.exportStack[this.exportStack.length - 1].push([ancestorName, `.`, ...alias, ` = `, ...name, `;\n`]);
 	}
 
 	public getExportContextName(node: ts.VariableStatement | ts.Node): string {
@@ -95,10 +96,10 @@ export class TranspilerState {
 	// For example, this is used for  exported/namespace values
 	// which should be represented differently in Lua than they
 	// can be represented in TS
-	public variableAliases = new Map<string, string>();
+	public variableAliases = new Map<string, Array<string>>();
 
-	public getAlias(name: string) {
-		const alias = this.variableAliases.get(name);
+	public getAlias(name: Array<string>) {
+		const alias = this.variableAliases.get(name.join(""));
 		if (alias !== undefined) {
 			return alias;
 		} else {

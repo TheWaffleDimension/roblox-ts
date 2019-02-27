@@ -28,7 +28,7 @@ import { TranspilerError, TranspilerErrorType } from "../errors/TranspilerError"
 import { TranspilerState } from "../TranspilerState";
 import { isIdentifierWhoseDefinitionMatchesNode } from "../utility";
 
-export function transpileExpression(state: TranspilerState, node: ts.Expression): string {
+export function transpileExpression(state: TranspilerState, node: ts.Expression): Array<string> {
 	if (ts.TypeGuards.isStringLiteral(node) || ts.TypeGuards.isNoSubstitutionTemplateLiteral(node)) {
 		return transpileStringLiteral(state, node);
 	} else if (ts.TypeGuards.isNumericLiteral(node)) {
@@ -76,7 +76,7 @@ export function transpileExpression(state: TranspilerState, node: ts.Expression)
 	} else if (ts.TypeGuards.isClassExpression(node)) {
 		return transpileClassExpression(state, node);
 	} else if (ts.TypeGuards.isOmittedExpression(node)) {
-		return "nil";
+		return ["nil"];
 	} else if (ts.TypeGuards.isThisExpression(node)) {
 		if (
 			!node.getFirstAncestorByKind(ts.SyntaxKind.ClassDeclaration) &&
@@ -88,9 +88,9 @@ export function transpileExpression(state: TranspilerState, node: ts.Expression)
 				TranspilerErrorType.NoThisOutsideClass,
 			);
 		}
-		return "self";
+		return ["self"];
 	} else if (ts.TypeGuards.isSuperExpression(node)) {
-		return "super";
+		return ["super"];
 	} else if (
 		ts.TypeGuards.isAsExpression(node) ||
 		ts.TypeGuards.isTypeAssertion(node) ||
@@ -120,7 +120,7 @@ export function transpileExpressionStatement(state: TranspilerState, node: ts.Ex
 	const expression = node.getExpression();
 
 	if (ts.TypeGuards.isCallExpression(expression)) {
-		return state.indent + transpileCallExpression(state, expression, true) + ";\n";
+		return [state.indent, ...transpileCallExpression(state, expression, true), ";\n"];
 	}
 
 	if (
@@ -135,9 +135,9 @@ export function transpileExpressionStatement(state: TranspilerState, node: ts.Ex
 		!(ts.TypeGuards.isBinaryExpression(expression) && isSetToken(expression.getOperatorToken().getKind()))
 	) {
 		const expStr = transpileExpression(state, expression);
-		return state.indent + `local _ = ${expStr};\n`;
+		return [state.indent, `local _ = `, ...expStr, `;\n`];
 	}
-	return state.indent + transpileExpression(state, expression) + ";\n";
+	return [state.indent, ...transpileExpression(state, expression), ";\n"];
 }
 
 export function expressionModifiesVariable(
@@ -168,7 +168,7 @@ export function expressionModifiesVariable(
 export function placeInStatementIfExpression(
 	state: TranspilerState,
 	incrementor: ts.Expression<ts.ts.Expression>,
-	incrementorStr: string,
+	incrementorStr: Array<string>,
 ) {
 	if (ts.TypeGuards.isExpression(incrementor)) {
 		if (
@@ -176,7 +176,7 @@ export function placeInStatementIfExpression(
 			!expressionModifiesVariable(incrementor) &&
 			!ts.TypeGuards.isVariableDeclarationList(incrementor)
 		) {
-			incrementorStr = `local _ = ` + incrementorStr;
+			incrementorStr.unshift("local _ = ");
 		}
 	}
 	return incrementorStr;

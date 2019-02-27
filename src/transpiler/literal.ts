@@ -2,9 +2,10 @@ import * as ts from "ts-morph";
 import { transpileExpression } from ".";
 import { TranspilerState } from "../TranspilerState";
 import { isStringType } from "../typeUtilities";
+import { addSeparatorAndFlatten } from "../utility";
 
 export function transpileBooleanLiteral(state: TranspilerState, node: ts.BooleanLiteral) {
-	return node.getLiteralValue() === true ? "true" : "false";
+	return [node.getLiteralValue() === true ? "true" : "false"];
 }
 
 const SPECIAL_NUMBER_PREFIXES = [
@@ -25,9 +26,9 @@ function isSpecialNumberPrefix(numText: string) {
 export function transpileNumericLiteral(state: TranspilerState, node: ts.NumericLiteral) {
 	const text = node.getText();
 	if (isSpecialNumberPrefix(text)) {
-		return node.getLiteralText();
+		return [node.getLiteralText()];
 	}
-	return text;
+	return [text];
 }
 
 function sanitizeTemplate(str: string) {
@@ -41,14 +42,14 @@ export function transpileStringLiteral(
 	node: ts.StringLiteral | ts.NoSubstitutionTemplateLiteral,
 ) {
 	if (ts.TypeGuards.isNoSubstitutionTemplateLiteral(node)) {
-		return '"' + sanitizeTemplate(node.getText().slice(1, -1)) + '"';
+		return ['"' + sanitizeTemplate(node.getText().slice(1, -1)) + '"'];
 	} else {
-		return node.getText();
+		return [node.getText()];
 	}
 }
 
 export function transpileTemplateExpression(state: TranspilerState, node: ts.TemplateExpression) {
-	const bin = new Array<string>();
+	const bin = new Array<Array<string>>();
 
 	const headText = sanitizeTemplate(
 		node
@@ -57,7 +58,7 @@ export function transpileTemplateExpression(state: TranspilerState, node: ts.Tem
 			.slice(1, -2),
 	);
 	if (headText.length > 0) {
-		bin.push(`"${headText}"`);
+		bin.push(['"', headText, '"']);
 	}
 
 	for (const span of node.getTemplateSpans()) {
@@ -77,13 +78,13 @@ export function transpileTemplateExpression(state: TranspilerState, node: ts.Tem
 			if (isStringType(exp.getType())) {
 				bin.push(expStr);
 			} else {
-				bin.push(`tostring(${expStr})`);
+				bin.push(["tostring(", ...expStr, ")"]);
 			}
 			if (literalStr.length > 0) {
-				bin.push(`"${literalStr}"`);
+				bin.push(['"', literalStr, '"']);
 			}
 		}
 	}
 
-	return bin.join(" .. ");
+	return addSeparatorAndFlatten(bin, " .. ");
 }

@@ -3,6 +3,7 @@ import { checkApiAccess, checkNonAny, transpileExpression } from ".";
 import { TranspilerError, TranspilerErrorType } from "../errors/TranspilerError";
 import { TranspilerState } from "../TranspilerState";
 import { isArrayType, isStringType, isTupleReturnType, typeConstraint } from "../typeUtilities";
+import { addSeparatorAndFlatten } from "../utility";
 
 const STRING_MACRO_METHODS = [
 	"byte",
@@ -37,10 +38,10 @@ function wrapExpressionIfNeeded(
 			ts.TypeGuards.isPropertyAccessExpression(subExp)
 		)
 	) {
-		return `(${accessPath})`;
-	} else {
-		return accessPath;
+		accessPath.unshift("(");
+		accessPath.push(")");
 	}
+	return accessPath;
 }
 
 function getLeftHandSideParent(subExp: ts.Node) {
@@ -61,7 +62,7 @@ function transpileLiterally(
 	state: TranspilerState,
 	subExp: ts.LeftHandSideExpression<ts.ts.LeftHandSideExpression>,
 	funcName: "set" | "add",
-	transpileParamFunc: (argumentList: Array<ts.Node>) => string,
+	transpileParamFunc: (argumentList: Array<ts.Node>) => Array<string>,
 ) {
 	// and subExp is inside a VariableDeclaration, check if we can transpile an object literal
 	if (ts.TypeGuards.isVariableDeclaration(getLeftHandSideParent(subExp))) {
@@ -82,10 +83,15 @@ function transpileLiterally(
 
 		// if all set calls are on a newExpression
 		if (child && ts.TypeGuards.isNewExpression(child)) {
+			const result = new Array<string>();
+			result.push(state.indent, "{\n");
 			state.pushIndent();
-			let result = extraParams.reduceRight((a, x) => (a += state.indent + transpileParamFunc(x)), "{\n");
-			result += state.indent + transpileParamFunc(params) + "}";
+			for (const extraParam of extraParams) {
+				result.push(state.indent, ...transpileParamFunc(extraParam));
+			}
+			result.push(state.indent, ...transpileParamFunc(params));
 			state.popIndent();
+			result.push(state.indent, "}");
 			return result;
 		}
 	}
@@ -96,21 +102,21 @@ function getPropertyCallParentIsExpression(subExp: ts.LeftHandSideExpression<ts.
 }
 
 type SimpleReplaceFunction = (
-	accessPath: string,
+	accessPath: Array<string>,
 	params: Array<ts.Node>,
 	state: TranspilerState,
 	subExp: ts.LeftHandSideExpression<ts.ts.LeftHandSideExpression>,
-) => string | undefined;
+) => Array<string> | undefined;
 
 type ReplaceFunction = (
 	params: Array<ts.Node>,
 	state: TranspilerState,
 	subExp: ts.LeftHandSideExpression<ts.ts.LeftHandSideExpression>,
-) => string | undefined;
+) => Array<string> | undefined;
 
 type ReplaceMap = Map<string, ReplaceFunction>;
 
-function wrapExpFunc(replacer: (accessPath: string) => string): ReplaceFunction {
+function wrapExpFunc(replacer: (accessPath: Array<string>) => Array<string>): ReplaceFunction {
 	return (params, state, subExp) => replacer(wrapExpressionIfNeeded(state, subExp));
 }
 
@@ -119,16 +125,16 @@ function accessPathWrap(replacer: SimpleReplaceFunction): ReplaceFunction {
 }
 
 const STRING_REPLACE_METHODS: ReplaceMap = new Map<string, ReplaceFunction>()
-	.set("trim", wrapExpFunc(accessPath => `${accessPath}:match("^%s*(.-)%s*$")`))
-	.set("trimLeft", wrapExpFunc(accessPath => `${accessPath}:match("^%s*(.-)$")`))
-	.set("trimRight", wrapExpFunc(accessPath => `${accessPath}:match("^(.-)%s*$")`));
+	.set("trim", wrapExpFunc(accessPath => [...accessPath, ':match("^%s*(.-)%s*$")']))
+	.set("trimLeft", wrapExpFunc(accessPath => [...accessPath, ':match("^%s*(.-)$")']))
+	.set("trimRight", wrapExpFunc(accessPath => [...accessPath, ':match("^(.-)%s*$")']));
 
 STRING_REPLACE_METHODS.set("trimStart", STRING_REPLACE_METHODS.get("trimLeft")!);
 STRING_REPLACE_METHODS.set("trimEnd", STRING_REPLACE_METHODS.get("trimRight")!);
 
 const ARRAY_REPLACE_METHODS: ReplaceMap = new Map<string, ReplaceFunction>()
-	.set("pop", accessPathWrap(accessPath => `table.remove(${accessPath})`))
-	.set("shift", accessPathWrap(accessPath => `table.remove(${accessPath}, 1)`))
+	.set("pop", accessPathWrap(accessPath => ["table.remove(", ...accessPath, ")"]))
+	.set("shift", accessPathWrap(accessPath => ["table.remove(", ...accessPath, ", 1)"]))
 
 	.set("join", (params, state, subExp) => {
 		const arrayType = subExp.getType().getArrayType()!;
@@ -137,7 +143,7 @@ const ARRAY_REPLACE_METHODS: ReplaceMap = new Map<string, ReplaceFunction>()
 		if (validTypes.every(validType => validType.isNumber() || validType.isString())) {
 			const paramStr = params[0] ? transpileCallArgument(state, params[0]) : `", "`;
 			const accessPath = transpileExpression(state, subExp);
-			return `table.concat(${accessPath}, ${paramStr})`;
+			return [`table.concat(`, ...accessPath, `, `, ...paramStr, `)`];
 		}
 	})
 
@@ -147,7 +153,7 @@ const ARRAY_REPLACE_METHODS: ReplaceMap = new Map<string, ReplaceFunction>()
 		if (length === 1 && propertyCallParentIsExpression) {
 			const paramStr = transpileCallArgument(state, params[0]);
 			const accessPath = transpileExpression(state, subExp);
-			return `table.insert(${accessPath}, ${paramStr})`;
+			return [`table.insert(`, ...accessPath, `, `, ...paramStr, `)`];
 		}
 	})
 
@@ -157,7 +163,7 @@ const ARRAY_REPLACE_METHODS: ReplaceMap = new Map<string, ReplaceFunction>()
 		if (length === 1 && propertyCallParentIsExpression) {
 			const paramStr = transpileCallArgument(state, params[0]);
 			const accessPath = transpileExpression(state, subExp);
-			return `table.insert(${accessPath}, 1, ${paramStr})`;
+			return [`table.insert(`, ...accessPath, `, 1, `, ...paramStr, `)`];
 		}
 	})
 
@@ -166,7 +172,7 @@ const ARRAY_REPLACE_METHODS: ReplaceMap = new Map<string, ReplaceFunction>()
 		accessPathWrap((accessPath, params, state) => {
 			const indexParamStr = transpileCallArgument(state, params[0]);
 			const valueParamStr = transpileCallArgument(state, params[1]);
-			return `table.insert(${accessPath}, ${indexParamStr} + 1, ${valueParamStr})`;
+			return [`table.insert(`, ...accessPath, `, `, ...indexParamStr, ` + 1, `, ...valueParamStr, `)`];
 		}),
 	)
 
@@ -174,7 +180,7 @@ const ARRAY_REPLACE_METHODS: ReplaceMap = new Map<string, ReplaceFunction>()
 		"remove",
 		accessPathWrap((accessPath, params, state) => {
 			const indexParamStr = transpileCallArgument(state, params[0]);
-			return `table.remove(${accessPath}, ${indexParamStr} + 1)`;
+			return [`table.remove(`, ...accessPath, `, `, ...indexParamStr, ` + 1)`];
 		}),
 	);
 
@@ -183,7 +189,7 @@ const MAP_REPLACE_METHODS: ReplaceMap = new Map<string, ReplaceFunction>()
 		if (!getPropertyCallParentIsExpression(subExp)) {
 			const accessPath = transpileExpression(state, subExp);
 			const key = transpileCallArgument(state, params[0]);
-			return `${accessPath}[${key}]`;
+			return [...accessPath, `[`, ...key, `]`];
 		}
 	})
 
@@ -191,7 +197,7 @@ const MAP_REPLACE_METHODS: ReplaceMap = new Map<string, ReplaceFunction>()
 		const literalResults = transpileLiterally(params, state, subExp, "set", (argumentList: Array<ts.Node>) => {
 			const key = transpileCallArgument(state, argumentList[0]);
 			const value = transpileCallArgument(state, argumentList[1]);
-			return `[${key}] = ${value};\n`;
+			return [`[`, ...key, `] = `, ...value, `;\n`];
 		});
 
 		if (literalResults) {
@@ -201,7 +207,7 @@ const MAP_REPLACE_METHODS: ReplaceMap = new Map<string, ReplaceFunction>()
 				const key = transpileCallArgument(state, params[0]);
 				const value = transpileCallArgument(state, params[1]);
 				const accessPath = transpileExpression(state, subExp);
-				return `${accessPath}[${key}] = ${value}`;
+				return [...accessPath, `[`, ...key, `] = `, ...value];
 			}
 		}
 	})
@@ -210,7 +216,7 @@ const MAP_REPLACE_METHODS: ReplaceMap = new Map<string, ReplaceFunction>()
 		if (!getPropertyCallParentIsExpression(subExp)) {
 			const accessPath = transpileExpression(state, subExp);
 			const key = transpileCallArgument(state, params[0]);
-			return `(${accessPath}[${key}] ~= nil)`;
+			return [`(`, ...accessPath, `[`, ...key, `] ~= nil)`];
 		}
 	});
 
@@ -218,7 +224,7 @@ const SET_REPLACE_METHODS: ReplaceMap = new Map<string, ReplaceFunction>()
 	.set("add", (params, state, subExp) => {
 		const literalResults = transpileLiterally(params, state, subExp, "add", (argumentList: Array<ts.Node>) => {
 			const key = transpileCallArgument(state, argumentList[0]);
-			return `[${key}] = true;\n`;
+			return [`[`, ...key, `] = true;\n`];
 		});
 
 		if (literalResults) {
@@ -227,7 +233,7 @@ const SET_REPLACE_METHODS: ReplaceMap = new Map<string, ReplaceFunction>()
 			if (getPropertyCallParentIsExpression(subExp)) {
 				const accessPath = transpileExpression(state, subExp);
 				const key = transpileCallArgument(state, params[0]);
-				return `${accessPath}[${key}] = true`;
+				return [...accessPath, `[`, ...key, `] = true`];
 			}
 		}
 	})
@@ -236,7 +242,7 @@ const SET_REPLACE_METHODS: ReplaceMap = new Map<string, ReplaceFunction>()
 		if (getPropertyCallParentIsExpression(subExp)) {
 			const accessPath = transpileExpression(state, subExp);
 			const key = transpileCallArgument(state, params[0]);
-			return `${accessPath}[${key}] = nil`;
+			return [...accessPath, `[`, ...key, `] = nil`];
 		}
 	})
 
@@ -244,7 +250,7 @@ const SET_REPLACE_METHODS: ReplaceMap = new Map<string, ReplaceFunction>()
 		if (!getPropertyCallParentIsExpression(subExp)) {
 			const accessPath = transpileExpression(state, subExp);
 			const key = transpileCallArgument(state, params[0]);
-			return `(${accessPath}[${key}] ~= nil)`;
+			return [`(`, ...accessPath, `[`, ...key, `] ~= nil)`];
 		}
 	});
 
@@ -259,19 +265,19 @@ export function transpileCallArgument(state: TranspilerState, arg: ts.Node) {
 }
 
 export function transpileCallArguments(state: TranspilerState, args: Array<ts.Node>) {
-	const argStrs = new Array<string>();
+	const argStrs = new Array<Array<string>>();
 	for (const arg of args) {
 		argStrs.push(transpileCallArgument(state, arg));
 	}
 	return argStrs;
 }
 
-function concatParams(state: TranspilerState, myParams: Array<ts.Node>, accessPath?: string) {
+export function concatParams(state: TranspilerState, myParams: Array<ts.Node>, accessPath?: Array<string>) {
 	const params = transpileCallArguments(state, myParams);
 	if (accessPath) {
 		params.unshift(accessPath);
 	}
-	return params.join(", ");
+	return addSeparatorAndFlatten(params, ", ");
 }
 
 export function transpileCallExpression(state: TranspilerState, node: ts.CallExpression, doNotWrapTupleReturn = false) {
@@ -290,13 +296,14 @@ export function transpileCallExpression(state: TranspilerState, node: ts.CallExp
 		const params = node.getArguments();
 
 		if (ts.TypeGuards.isSuperExpression(exp)) {
-			return `super.constructor(${concatParams(state, params, "self")})`;
+			return [`super.constructor(`, ...concatParams(state, params, ["self"]), `)`];
 		}
 
 		const callPath = transpileExpression(state, exp);
-		let result = `${callPath}(${concatParams(state, params)})`;
+		const result = [...callPath, `(`, ...concatParams(state, params), `)`];
 		if (!doNotWrapTupleReturn && isTupleReturnType(node)) {
-			result = `{ ${result} }`;
+			result.unshift("{ ");
+			result.push(" }");
 		}
 		return result;
 	}
@@ -321,7 +328,7 @@ function transpilePropertyMethod(
 
 	const accessPath = transpileExpression(state, subExp);
 	state.usesTSLibrary = true;
-	return `TS.${className}_${property}(${concatParams(state, params, accessPath)})`;
+	return [`TS.${className}_${property}(${concatParams(state, params, accessPath)})`];
 }
 
 export const enum PropertyCallExpType {
@@ -449,28 +456,52 @@ export function transpilePropertyCallExpression(
 		case PropertyCallExpType.Array:
 			return transpilePropertyMethod(state, property, params, subExp, "array", ARRAY_REPLACE_METHODS);
 		case PropertyCallExpType.BuiltInStringMethod:
-			return `${wrapExpressionIfNeeded(state, subExp)}:${property}(${concatParams(state, params)})`;
+			return [...wrapExpressionIfNeeded(state, subExp), `:`, property, `(`, ...concatParams(state, params), `)`];
 		case PropertyCallExpType.String:
 			return transpilePropertyMethod(state, property, params, subExp, "string", STRING_REPLACE_METHODS);
 		case PropertyCallExpType.PromiseThen:
-			return `${transpileExpression(state, subExp)}:andThen(${concatParams(state, params)})`;
+			return [...transpileExpression(state, subExp), `:andThen(`, ...concatParams(state, params), `)`];
 		case PropertyCallExpType.SymbolFor:
-			return `${transpileExpression(state, subExp)}.getFor(${concatParams(state, params)})`;
+			return [...transpileExpression(state, subExp), `.getFor(`, ...concatParams(state, params), `)`];
 		case PropertyCallExpType.Map:
 			return transpilePropertyMethod(state, property, params, subExp, "map", MAP_REPLACE_METHODS);
 		case PropertyCallExpType.Set:
 			return transpilePropertyMethod(state, property, params, subExp, "set", SET_REPLACE_METHODS);
 		case PropertyCallExpType.ObjectConstructor:
 			state.usesTSLibrary = true;
-			return `TS.Object_${property}(${concatParams(state, params)})`;
+			return [`TS.Object_`, property, `(`, ...concatParams(state, params), `)`];
 		case PropertyCallExpType.RbxMathAdd:
-			return `(${transpileExpression(state, subExp)} + (${transpileCallArgument(state, params[0])}))`;
+			return [
+				`(`,
+				...transpileExpression(state, subExp),
+				` + (`,
+				...transpileCallArgument(state, params[0]),
+				`))`,
+			];
 		case PropertyCallExpType.RbxMathSub:
-			return `(${transpileExpression(state, subExp)} - (${transpileCallArgument(state, params[0])}))`;
+			return [
+				`(`,
+				...transpileExpression(state, subExp),
+				` - (`,
+				...transpileCallArgument(state, params[0]),
+				`))`,
+			];
 		case PropertyCallExpType.RbxMathMul:
-			return `(${transpileExpression(state, subExp)} * (${transpileCallArgument(state, params[0])}))`;
+			return [
+				`(`,
+				...transpileExpression(state, subExp),
+				` * (`,
+				...transpileCallArgument(state, params[0]),
+				`))`,
+			];
 		case PropertyCallExpType.RbxMathDiv:
-			return `(${transpileExpression(state, subExp)} / (${transpileCallArgument(state, params[0])}))`;
+			return [
+				`(`,
+				...transpileExpression(state, subExp),
+				` / (`,
+				...transpileCallArgument(state, params[0]),
+				`))`,
+			];
 	}
 
 	const expType = expression.getType();
@@ -529,11 +560,11 @@ export function transpilePropertyCallExpression(
 
 	let accessPath = transpileExpression(state, subExp);
 	let sep: string;
-	let extraParam = "";
+	let extraParam: Array<string> = [];
 	if (allMethods && !allCallbacks) {
 		if (ts.TypeGuards.isSuperExpression(subExp)) {
-			accessPath = "super.__index";
-			extraParam = "self";
+			accessPath = ["super.__index"];
+			extraParam = ["self"];
 			sep = ".";
 		} else {
 			sep = ":";
@@ -549,9 +580,10 @@ export function transpilePropertyCallExpression(
 		);
 	}
 
-	let result = `${accessPath}${sep}${property}(${concatParams(state, params, extraParam)})`;
+	const result = [...accessPath, sep, property, `(`, ...concatParams(state, params, extraParam), `)`];
 	if (!doNotWrapTupleReturn && isTupleReturnType(node)) {
-		result = `{ ${result} }`;
+		result.unshift("{ ");
+		result.push(" }");
 	}
 	return result;
 }

@@ -6,7 +6,7 @@ import { isTupleReturnType, shouldHoist } from "../typeUtilities";
 
 export function transpileVariableDeclaration(state: TranspilerState, node: ts.VariableDeclaration) {
 	const lhs = node.getNameNode();
-	const rhs = node.getInitializer();
+	const rhsNode = node.getInitializer();
 
 	const parent = node.getParent();
 	const grandParent = parent.getParent();
@@ -27,9 +27,9 @@ export function transpileVariableDeclaration(state: TranspilerState, node: ts.Va
 			.getElements()
 			.filter(v => ts.TypeGuards.isBindingElement(v))
 			.every(bindingElement => bindingElement.getChildAtIndex(0).getKind() === ts.SyntaxKind.Identifier);
-		if (isFlatBinding && rhs && ts.TypeGuards.isCallExpression(rhs) && isTupleReturnType(rhs)) {
-			const names = new Array<string>();
-			const values = new Array<string>();
+		if (isFlatBinding && rhsNode && ts.TypeGuards.isCallExpression(rhsNode) && isTupleReturnType(rhsNode)) {
+			const names = new Array<Array<string>>();
+			const values = new Array<Array<string>>();
 			for (const element of lhs.getElements()) {
 				if (ts.TypeGuards.isBindingElement(element)) {
 					const nameNode = element.getNameNode();
@@ -37,73 +37,73 @@ export function transpileVariableDeclaration(state: TranspilerState, node: ts.Va
 						names.push(transpileExpression(state, nameNode));
 					}
 				} else if (ts.TypeGuards.isOmittedExpression(element)) {
-					names.push("_");
+					names.push(["_"]);
 				}
 			}
-			values.push(transpileCallExpression(state, rhs, true));
+			values.push(transpileCallExpression(state, rhsNode, true));
 			if (isExported && decKind === ts.VariableDeclarationKind.Let) {
-				return state.indent + `${names.join(", ")} = ${values.join(", ")};\n`;
+				return [state.indent, names.join(", "), " = ", values.join(", "), ";\n"];
 			} else {
 				if (isExported && ts.TypeGuards.isVariableStatement(grandParent)) {
 					names.forEach(name => state.pushExport(name, grandParent));
 				}
-				return state.indent + `local ${names.join(", ")} = ${values.join(", ")};\n`;
+				return [state.indent, "local ", names.join(", "), " = ", values.join(", "), ";\n"];
 			}
 		}
 	}
 
-	let result = "";
+	const result = new Array<string>();
 	if (ts.TypeGuards.isIdentifier(lhs)) {
 		const name = lhs.getText();
 		checkReserved(name, lhs, true);
-		if (rhs) {
-			const value = transpileExpression(state, rhs);
+		if (rhsNode) {
+			const value = transpileExpression(state, rhsNode);
 			if (isExported && decKind === ts.VariableDeclarationKind.Let) {
-				result += state.indent + `${parentName}.${name} = ${value};\n`;
+				result.push(state.indent, parentName, ".", name, " = ", ...value, ";\n");
 			} else {
 				if (isExported && ts.TypeGuards.isVariableStatement(grandParent)) {
-					state.pushExport(name, grandParent);
+					state.pushExport([name], grandParent);
 				}
 				if (shouldHoist(grandParent, lhs)) {
-					state.pushHoistStack(name);
-					result += state.indent + `${name} = ${value};\n`;
+					state.pushHoistStack([name]);
+					result.push(state.indent, name, " = ", ...value, ";\n");
 				} else {
-					result += state.indent + `local ${name} = ${value};\n`;
+					result.push(state.indent, "local ", name, " = ", ...value, ";\n");
 				}
 			}
 		} else if (!isExported) {
 			if (shouldHoist(grandParent, lhs)) {
-				state.pushHoistStack(name);
+				state.pushHoistStack([name]);
 			} else {
-				result += state.indent + `local ${name};\n`;
+				result.push(state.indent, "local ", name, ";\n");
 			}
 		}
-	} else if ((ts.TypeGuards.isArrayBindingPattern(lhs) || ts.TypeGuards.isObjectBindingPattern(lhs)) && rhs) {
+	} else if ((ts.TypeGuards.isArrayBindingPattern(lhs) || ts.TypeGuards.isObjectBindingPattern(lhs)) && rhsNode) {
 		// binding patterns MUST have rhs
-		const names = new Array<string>();
-		const values = new Array<string>();
-		const preStatements = new Array<string>();
-		const postStatements = new Array<string>();
-		if (ts.TypeGuards.isIdentifier(rhs)) {
-			getBindingData(state, names, values, preStatements, postStatements, lhs, transpileExpression(state, rhs));
+		const names = new Array<Array<string>>();
+		const values = new Array<Array<string>>();
+		const preStatements = new Array<Array<string>>();
+		const postStatements = new Array<Array<string>>();
+		if (ts.TypeGuards.isIdentifier(rhsNode)) {
+			getBindingData(state, names, values, preStatements, postStatements, lhs, transpileExpression(state, rhsNode));
 		} else {
 			const rootId = state.getNewId();
-			const rhsStr = transpileExpression(state, rhs);
-			preStatements.push(`local ${rootId} = ${rhsStr};`);
+			const rhs = transpileExpression(state, rhsNode);
+			preStatements.push(["local ", ...rootId, " = ", ...rhs, ";"]);
 			getBindingData(state, names, values, preStatements, postStatements, lhs, rootId);
 		}
-		preStatements.forEach(statementStr => (result += state.indent + statementStr + "\n"));
+		preStatements.forEach(statementStr => (result.push(state.indent, ...statementStr, "\n")));
 		if (values.length > 0) {
 			if (isExported && decKind === ts.VariableDeclarationKind.Let) {
-				result += state.indent + `${names.join(", ")} = ${values.join(", ")};\n`;
+				result.push(state.indent, names.join(", "), " = ", values.join(", "), ";\n");
 			} else {
 				if (isExported && ts.TypeGuards.isVariableStatement(grandParent)) {
 					names.forEach(name => state.pushExport(name, grandParent));
 				}
-				result += state.indent + `local ${names.join(", ")} = ${values.join(", ")};\n`;
+				result.push(state.indent, "local ", names.join(", "), " = ", values.join(", "), ";\n");
 			}
 		}
-		postStatements.forEach(statementStr => (result += state.indent + statementStr + "\n"));
+		postStatements.forEach(statementStr => (result.push(state.indent, ...statementStr, "\n")));
 	}
 
 	return result;
@@ -119,9 +119,9 @@ export function transpileVariableDeclarationList(state: TranspilerState, node: t
 		);
 	}
 
-	let result = "";
+	const result = new Array<string>();
 	for (const declaration of node.getDeclarations()) {
-		result += transpileVariableDeclaration(state, declaration);
+		result.push(...transpileVariableDeclaration(state, declaration));
 	}
 	return result;
 }

@@ -7,7 +7,7 @@ import { getScriptContext, getScriptType, ScriptType } from "../utility";
 export function transpileSourceFile(state: TranspilerState, node: ts.SourceFile) {
 	state.scriptContext = getScriptContext(node);
 	const scriptType = getScriptType(node);
-	let result = transpileStatementedNode(state, node);
+	const result = transpileStatementedNode(state, node);
 	if (state.isModule) {
 		if (scriptType !== ScriptType.Module) {
 			throw new TranspilerError(
@@ -26,26 +26,26 @@ export function transpileSourceFile(state: TranspilerState, node: ts.SourceFile)
 		}
 
 		if (hasExportEquals) {
-			result = state.indent + `local _exports;\n` + result;
+			result.unshift(state.indent, `local _exports;\n`);
 		} else {
-			result = state.indent + `local _exports = {};\n` + result;
+			result.unshift(state.indent, `local _exports = {};\n`);
 		}
-		result += state.indent + "return _exports;\n";
+		result.push(state.indent, "return _exports;\n");
 	} else {
 		if (scriptType === ScriptType.Module) {
-			result += state.indent + "return nil;\n";
+			result.push(state.indent, "return nil;\n");
 		}
 	}
 	if (state.usesTSLibrary) {
-		result =
-			state.indent +
+		result.unshift(
+			state.indent,
 			`local TS = require(
 	game:GetService("ReplicatedStorage")
 		:WaitForChild("RobloxTS")
 		:WaitForChild("Include")
 		:WaitForChild("RuntimeLib")
-);\n` +
-			result;
+);\n`,
+		);
 	}
-	return result;
+	return result.join("");
 }

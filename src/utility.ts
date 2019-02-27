@@ -7,11 +7,11 @@ export function isValidLuaIdentifier(id: string) {
 	return luaIdentifierRegex.test(id);
 }
 
-export function safeLuaIndex(parent: string, child: string) {
-	if (isValidLuaIdentifier(child)) {
-		return `${parent}.${child}`;
+export function safeLuaIndex(parent: Array<string>, child: Array<string>) {
+	if (isValidLuaIdentifier(child.join(""))) {
+		return [...parent, `.`, ...child, ``];
 	} else {
-		return `${parent}["${child}"]`;
+		return [...parent, `["`, ...child, `"]`];
 	}
 }
 
@@ -132,4 +132,25 @@ export function isIdentifierWhoseDefinitionMatchesNode(
 		}
 	}
 	return false;
+}
+
+export function addSeparator(input: Array<Array<string>>, separator = ", ") {
+	for (let i = 0; i < input.length - 1; i++) {
+		input[i].push(separator);
+	}
+}
+
+export function flatten(input: Array<Array<string>>) {
+	const result = new Array<string>();
+	for (const a of input) {
+		for (const b of a) {
+			result.push(b);
+		}
+	}
+	return result;
+}
+
+export function addSeparatorAndFlatten(input: Array<Array<string>>, separator = ", ") {
+	addSeparator(input, separator);
+	return flatten(input);
 }

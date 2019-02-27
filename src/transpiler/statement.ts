@@ -28,10 +28,10 @@ import { TranspilerError, TranspilerErrorType } from "../errors/TranspilerError"
 import { TranspilerState } from "../TranspilerState";
 import { isTypeStatement } from "../typeUtilities";
 
-export function transpileStatement(state: TranspilerState, node: ts.Statement): string {
+export function transpileStatement(state: TranspilerState, node: ts.Statement): Array<string> {
 	/* istanbul ignore else  */
 	if (isTypeStatement(node)) {
-		return "";
+		return [];
 	} else if (ts.TypeGuards.isBlock(node)) {
 		return transpileBlock(state, node);
 	} else if (ts.TypeGuards.isImportDeclaration(node)) {
@@ -92,7 +92,7 @@ export function transpileStatement(state: TranspilerState, node: ts.Statement): 
 		ts.TypeGuards.isTypeAliasDeclaration(node) ||
 		ts.TypeGuards.isInterfaceDeclaration(node)
 	) {
-		return "";
+		return [];
 	}
 
 	/* istanbul ignore next */
@@ -101,21 +101,21 @@ export function transpileStatement(state: TranspilerState, node: ts.Statement): 
 
 export function transpileStatementedNode(state: TranspilerState, node: ts.Node & ts.StatementedNode) {
 	state.pushIdStack();
-	state.exportStack.push(new Set<string>());
-	let result = "";
+	state.exportStack.push(new Array<Array<string>>());
+	const result = new Array<string>();
 	state.hoistStack.push(new Set<string>());
 	for (const child of node.getStatements()) {
-		result += transpileStatement(state, child);
+		result.push(...transpileStatement(state, child));
 		if (child.getKind() === ts.SyntaxKind.ReturnStatement) {
 			break;
 		}
 	}
 
-	result = state.popHoistStack(result);
+	state.popHoistStack(result);
 
 	const scopeExports = state.exportStack.pop();
-	if (scopeExports && scopeExports.size > 0) {
-		scopeExports.forEach(scopeExport => (result += state.indent + scopeExport));
+	if (scopeExports && scopeExports.length > 0) {
+		scopeExports.forEach(scopeExport => result.push(state.indent, ...scopeExport));
 	}
 	state.popIdStack();
 	return result;

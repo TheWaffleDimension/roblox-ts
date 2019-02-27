@@ -3,34 +3,41 @@ import { checkNonAny, getBindingData, transpileExpression } from ".";
 import { TranspilerError, TranspilerErrorType } from "../errors/TranspilerError";
 import { TranspilerState } from "../TranspilerState";
 import { isNumberType, isStringType } from "../typeUtilities";
+import { addSeparator, flatten } from "../utility";
 
-function getLuaBarExpression(state: TranspilerState, node: ts.BinaryExpression, lhsStr: string, rhsStr: string) {
+function getLuaBarExpression(
+	state: TranspilerState,
+	node: ts.BinaryExpression,
+	lhs: Array<string>,
+	rhs: Array<string>,
+) {
 	state.usesTSLibrary = true;
-	const rhs = node.getRight();
-	if (ts.TypeGuards.isNumericLiteral(rhs) && rhs.getLiteralValue() === 0) {
-		return `TS.round(${lhsStr})`;
+	const rhsNode = node.getRight();
+	if (ts.TypeGuards.isNumericLiteral(rhsNode) && rhsNode.getLiteralValue() === 0) {
+		return ["TS.round(", ...lhs, ")"];
 	} else {
-		return `TS.bor(${lhsStr}, ${rhsStr})`;
+		return ["TS.bor(", ...lhs, ", ", ...rhs, ")"];
 	}
 }
 
-function getLuaBitExpression(state: TranspilerState, lhsStr: string, rhsStr: string, name: string) {
+function getLuaBitExpression(state: TranspilerState, lhs: Array<string>, rhs: Array<string>, name: string) {
 	state.usesTSLibrary = true;
-	return `TS.b${name}(${lhsStr}, ${rhsStr})`;
+	return ["TS.b", name, "(", ...lhs, ", ", ...rhs, ")"];
 }
 
-function getLuaAddExpression(node: ts.BinaryExpression, lhsStr: string, rhsStr: string, wrap = false) {
+function getLuaAddExpression(node: ts.BinaryExpression, lhs: Array<string>, rhs: Array<string>, wrap = false) {
 	if (wrap) {
-		rhsStr = `(${rhsStr})`;
+		rhs.unshift("(");
+		rhs.push(")");
 	}
 	const leftType = node.getLeft().getType();
 	const rightType = node.getRight().getType();
 
 	/* istanbul ignore else */
 	if (isStringType(leftType) || isStringType(rightType)) {
-		return `(${lhsStr}) .. ${rhsStr}`;
+		return ["(", ...lhs, ") .. ", ...rhs];
 	} else if (isNumberType(leftType) && isNumberType(rightType)) {
-		return `${lhsStr} + ${rhsStr}`;
+		return [...lhs, " + ", ...rhs];
 	} else {
 		/* istanbul ignore next */
 		throw new TranspilerError(
@@ -62,107 +69,101 @@ export function transpileBinaryExpression(state: TranspilerState, node: ts.Binar
 	const opToken = node.getOperatorToken();
 	const opKind = opToken.getKind();
 
-	const lhs = node.getLeft();
-	const rhs = node.getRight();
-	let lhsStr: string;
-	const rhsStr = transpileExpression(state, rhs);
-	const statements = new Array<string>();
+	const lhsNode = node.getLeft();
+	const rhsNode = node.getRight();
+	let lhs: Array<string>;
+	const rhs = transpileExpression(state, rhsNode);
+	const statements = new Array<Array<string>>();
 
 	if (opKind !== ts.SyntaxKind.EqualsToken) {
-		checkNonAny(lhs);
-		checkNonAny(rhs);
+		checkNonAny(lhsNode);
+		checkNonAny(rhsNode);
 	}
 
 	// binding patterns
-	if (ts.TypeGuards.isArrayLiteralExpression(lhs)) {
-		const names = new Array<string>();
-		const values = new Array<string>();
-		const preStatements = new Array<string>();
-		const postStatements = new Array<string>();
+	if (ts.TypeGuards.isArrayLiteralExpression(lhsNode)) {
+		const names = new Array<Array<string>>();
+		const values = new Array<Array<string>>();
+		const preStatements = new Array<Array<string>>();
+		const postStatements = new Array<Array<string>>();
 
-		let rootId: string;
-		if (ts.TypeGuards.isIdentifier(rhs)) {
-			rootId = transpileExpression(state, rhs);
+		let rootId: Array<string>;
+		if (ts.TypeGuards.isIdentifier(rhsNode)) {
+			rootId = transpileExpression(state, rhsNode);
 		} else {
 			rootId = state.getNewId();
-			preStatements.push(`local ${rootId} = ${transpileExpression(state, rhs)};`);
+			preStatements.push(["local ", ...rootId, " = ", ...transpileExpression(state, rhsNode), ";"]);
 		}
-		getBindingData(state, names, values, preStatements, postStatements, lhs, rootId);
+		getBindingData(state, names, values, preStatements, postStatements, lhsNode, rootId);
 
-		let result = "";
+		const result = new Array<string>();
 		const parentKind = node.getParentOrThrow().getKind();
 		if (parentKind === ts.SyntaxKind.ExpressionStatement || parentKind === ts.SyntaxKind.ForStatement) {
-			preStatements.forEach(statementStr => (result += state.indent + statementStr + "\n"));
-			result += state.indent + `${names.join(", ")} = ${values.join(", ")};\n`;
-			postStatements.forEach(statementStr => (result += state.indent + statementStr + "\n"));
-			result = result.replace(/;\n$/, ""); // terrible hack
+			preStatements.forEach(statementStr => result.push(state.indent, ...statementStr, "\n"));
+			result.push(state.indent, names.join(", "), " = ", values.join(", "), ";\n");
+			postStatements.forEach(statementStr => result.push(state.indent, ...statementStr, "\n"));
+			result[result.length - 1] = result[result.length - 1].replace(/;\n$/, ""); // terrible hack
 		} else {
-			result += `(function()\n`;
+			result.push("(function()\n");
 			state.pushIndent();
-			preStatements.forEach(statementStr => (result += state.indent + statementStr + "\n"));
-			result += state.indent + `${names.join(", ")} = ${values.join(", ")};\n`;
-			postStatements.forEach(statementStr => (result += state.indent + statementStr + "\n"));
-			result += state.indent + `return ${rootId};\n`;
+			preStatements.forEach(statementStr => result.push(state.indent, ...statementStr, "\n"));
+			result.push(state.indent, names.join(", "), " = ", values.join(", "), ";\n");
+			postStatements.forEach(statementStr => result.push(state.indent, ...statementStr, "\n"));
+			result.push(state.indent, "return ", ...rootId, ";\n");
 			state.popIndent();
-			result += `end)()`;
+			result.push("end)()");
 		}
 		return result;
 	}
 
 	if (isSetToken(opKind)) {
-		if (ts.TypeGuards.isPropertyAccessExpression(lhs) && opKind !== ts.SyntaxKind.EqualsToken) {
-			const expression = lhs.getExpression();
+		if (ts.TypeGuards.isPropertyAccessExpression(lhsNode) && opKind !== ts.SyntaxKind.EqualsToken) {
+			const expression = lhsNode.getExpression();
 			const opExpStr = transpileExpression(state, expression);
-			const propertyStr = lhs.getName();
+			const propertyStr = lhsNode.getName();
 			const id = state.getNewId();
-			statements.push(`local ${id} = ${opExpStr}`);
-			lhsStr = `${id}.${propertyStr}`;
+			statements.push(["local ", ...id, " = ", ...opExpStr]);
+			lhs = [...id, ".", propertyStr];
 		} else {
-			lhsStr = transpileExpression(state, lhs);
+			lhs = transpileExpression(state, lhsNode);
 		}
 
 		/* istanbul ignore else */
 		if (opKind === ts.SyntaxKind.EqualsToken) {
-			statements.push(`${lhsStr} = ${rhsStr}`);
+			statements.push([...lhs, " = ", ...rhs]);
 		} else if (opKind === ts.SyntaxKind.BarEqualsToken) {
-			const barExpStr = getLuaBarExpression(state, node, lhsStr, rhsStr);
-			statements.push(`${lhsStr} = ${barExpStr}`);
+			statements.push([...lhs, " = ", ...getLuaBarExpression(state, node, lhs, rhs)]);
 		} else if (opKind === ts.SyntaxKind.AmpersandEqualsToken) {
-			const ampersandExpStr = getLuaBitExpression(state, lhsStr, rhsStr, "and");
-			statements.push(`${lhsStr} = ${ampersandExpStr}`);
+			statements.push([...lhs, " = ", ...getLuaBitExpression(state, lhs, rhs, "and")]);
 		} else if (opKind === ts.SyntaxKind.CaretEqualsToken) {
-			const caretExpStr = getLuaBitExpression(state, lhsStr, rhsStr, "xor");
-			statements.push(`${lhsStr} = ${caretExpStr}`);
+			statements.push([...lhs, " = ", ...getLuaBitExpression(state, lhs, rhs, "xor")]);
 		} else if (opKind === ts.SyntaxKind.LessThanLessThanEqualsToken) {
-			const lhsExpStr = getLuaBitExpression(state, lhsStr, rhsStr, "lsh");
-			statements.push(`${lhsStr} = ${lhsExpStr}`);
+			statements.push([...lhs, " = ", ...getLuaBitExpression(state, lhs, rhs, "lsh")]);
 		} else if (opKind === ts.SyntaxKind.GreaterThanGreaterThanEqualsToken) {
-			const rhsExpStr = getLuaBitExpression(state, lhsStr, rhsStr, "rsh");
-			statements.push(`${lhsStr} = ${rhsExpStr}`);
+			statements.push([...lhs, " = ", ...getLuaBitExpression(state, lhs, rhs, "rsh")]);
 		} else if (opKind === ts.SyntaxKind.PlusEqualsToken) {
-			const addExpStr = getLuaAddExpression(node, lhsStr, rhsStr, true);
-			statements.push(`${lhsStr} = ${addExpStr}`);
+			statements.push([...lhs, " = ", ...getLuaAddExpression(node, lhs, rhs, true)]);
 		} else if (opKind === ts.SyntaxKind.MinusEqualsToken) {
-			statements.push(`${lhsStr} = ${lhsStr} - (${rhsStr})`);
+			statements.push([...lhs, " = ", ...lhs, " - (", ...rhs, ")"]);
 		} else if (opKind === ts.SyntaxKind.AsteriskEqualsToken) {
-			statements.push(`${lhsStr} = ${lhsStr} * (${rhsStr})`);
+			statements.push([...lhs, " = ", ...lhs, " * (", ...rhs, ")"]);
 		} else if (opKind === ts.SyntaxKind.SlashEqualsToken) {
-			statements.push(`${lhsStr} = ${lhsStr} / (${rhsStr})`);
+			statements.push([...lhs, " = ", ...lhs, " / (", ...rhs, ")"]);
 		} else if (opKind === ts.SyntaxKind.AsteriskAsteriskEqualsToken) {
-			statements.push(`${lhsStr} = ${lhsStr} ^ (${rhsStr})`);
+			statements.push([...lhs, " = ", ...lhs, " ^ (", ...rhs, ")"]);
 		} else if (opKind === ts.SyntaxKind.PercentEqualsToken) {
-			statements.push(`${lhsStr} = ${lhsStr} % (${rhsStr})`);
+			statements.push([...lhs, " = ", ...lhs, " % (", ...rhs, ")"]);
 		}
 
 		const parentKind = node.getParentOrThrow().getKind();
+		addSeparator(statements, "; ");
 		if (parentKind === ts.SyntaxKind.ExpressionStatement || parentKind === ts.SyntaxKind.ForStatement) {
-			return statements.join("; ");
+			return flatten(statements);
 		} else {
-			const statementsStr = statements.join("; ");
-			return `(function() ${statementsStr}; return ${lhsStr}; end)()`;
+			return ["(function() ", ...flatten(statements), "; return ", ...lhs, "; end)()"];
 		}
 	} else {
-		lhsStr = transpileExpression(state, lhs);
+		lhs = transpileExpression(state, lhsNode);
 	}
 
 	/* istanbul ignore else */
@@ -173,7 +174,7 @@ export function transpileBinaryExpression(state: TranspilerState, node: ts.Binar
 			TranspilerErrorType.NoEqualsEquals,
 		);
 	} else if (opKind === ts.SyntaxKind.EqualsEqualsEqualsToken) {
-		return `${lhsStr} == ${rhsStr}`;
+		return [...lhs, ` == `, ...rhs];
 	} else if (opKind === ts.SyntaxKind.ExclamationEqualsToken) {
 		throw new TranspilerError(
 			"operator '!=' is not supported! Use '!==' instead.",
@@ -181,47 +182,47 @@ export function transpileBinaryExpression(state: TranspilerState, node: ts.Binar
 			TranspilerErrorType.NoExclamationEquals,
 		);
 	} else if (opKind === ts.SyntaxKind.ExclamationEqualsEqualsToken) {
-		return `${lhsStr} ~= ${rhsStr}`;
+		return [...lhs, ` ~= `, ...rhs];
 	} else if (opKind === ts.SyntaxKind.BarToken) {
-		return getLuaBarExpression(state, node, lhsStr, rhsStr);
+		return getLuaBarExpression(state, node, lhs, rhs);
 	} else if (opKind === ts.SyntaxKind.AmpersandToken) {
-		return getLuaBitExpression(state, lhsStr, rhsStr, "and");
+		return getLuaBitExpression(state, lhs, rhs, "and");
 	} else if (opKind === ts.SyntaxKind.CaretToken) {
-		return getLuaBitExpression(state, lhsStr, rhsStr, "xor");
+		return getLuaBitExpression(state, lhs, rhs, "xor");
 	} else if (opKind === ts.SyntaxKind.LessThanLessThanToken) {
-		return getLuaBitExpression(state, lhsStr, rhsStr, "lsh");
+		return getLuaBitExpression(state, lhs, rhs, "lsh");
 	} else if (opKind === ts.SyntaxKind.GreaterThanGreaterThanToken) {
-		return getLuaBitExpression(state, lhsStr, rhsStr, "rsh");
+		return getLuaBitExpression(state, lhs, rhs, "rsh");
 	} else if (opKind === ts.SyntaxKind.PlusToken) {
-		return getLuaAddExpression(node, lhsStr, rhsStr);
+		return getLuaAddExpression(node, lhs, rhs);
 	} else if (opKind === ts.SyntaxKind.MinusToken) {
-		return `${lhsStr} - ${rhsStr}`;
+		return [...lhs, ` - `, ...rhs];
 	} else if (opKind === ts.SyntaxKind.AsteriskToken) {
-		return `${lhsStr} * ${rhsStr}`;
+		return [...lhs, ` * `, ...rhs];
 	} else if (opKind === ts.SyntaxKind.SlashToken) {
-		return `${lhsStr} / ${rhsStr}`;
+		return [...lhs, ` / `, ...rhs];
 	} else if (opKind === ts.SyntaxKind.AsteriskAsteriskToken) {
-		return `${lhsStr} ^ ${rhsStr}`;
+		return [...lhs, ` ^ `, ...rhs];
 	} else if (opKind === ts.SyntaxKind.InKeyword) {
 		// doesn't need parenthesis because In is restrictive
-		return `${rhsStr}[${lhsStr}] ~= nil`;
+		return [...rhs, `[`, ...lhs, `] ~= nil`];
 	} else if (opKind === ts.SyntaxKind.AmpersandAmpersandToken) {
-		return `${lhsStr} and ${rhsStr}`;
+		return [...lhs, ` and `, ...rhs];
 	} else if (opKind === ts.SyntaxKind.BarBarToken) {
-		return `${lhsStr} or ${rhsStr}`;
+		return [...lhs, ` or `, ...rhs];
 	} else if (opKind === ts.SyntaxKind.GreaterThanToken) {
-		return `${lhsStr} > ${rhsStr}`;
+		return [...lhs, ` > `, ...rhs];
 	} else if (opKind === ts.SyntaxKind.LessThanToken) {
-		return `${lhsStr} < ${rhsStr}`;
+		return [...lhs, ` < `, ...rhs];
 	} else if (opKind === ts.SyntaxKind.GreaterThanEqualsToken) {
-		return `${lhsStr} >= ${rhsStr}`;
+		return [...lhs, ` >= `, ...rhs];
 	} else if (opKind === ts.SyntaxKind.LessThanEqualsToken) {
-		return `${lhsStr} <= ${rhsStr}`;
+		return [...lhs, ` <= `, ...rhs];
 	} else if (opKind === ts.SyntaxKind.PercentToken) {
-		return `${lhsStr} % ${rhsStr}`;
+		return [...lhs, ` % `, ...rhs];
 	} else if (opKind === ts.SyntaxKind.InstanceOfKeyword) {
 		state.usesTSLibrary = true;
-		return `TS.instanceof(${lhsStr}, ${rhsStr})`;
+		return [`TS.instanceof(`, ...lhs, `, `, ...rhs, `)`];
 	} else {
 		/* istanbul ignore next */
 		throw new TranspilerError(

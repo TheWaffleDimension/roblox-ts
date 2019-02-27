@@ -23,7 +23,7 @@ export function transpilePropertyAccessExpression(state: TranspilerState, node: 
 		propertyAccessExpressionType === PropertyCallExpType.String ||
 		(propertyAccessExpressionType === PropertyCallExpType.Array && propertyStr === "length")
 	) {
-		return `(#${expStr})`;
+		return ["(#", ...expStr, ")"];
 	} else if (propertyAccessExpressionType !== PropertyCallExpType.None) {
 		throw new TranspilerError(
 			`Invalid property access! Cannot index non-member "${propertyStr}" (a roblox-ts macro function)`,
@@ -45,7 +45,7 @@ export function transpilePropertyAccessExpression(state: TranspilerState, node: 
 			.getName();
 		const indexA = safeLuaIndex(`${baseClassName}._getters`, propertyStr);
 		const indexB = safeLuaIndex("self", propertyStr);
-		return `(${indexA} and function(self) return ${indexA}(self) end or function() return ${indexB} end)(self)`;
+		return [`(${indexA} and function(self) return ${indexA}(self) end or function() return ${indexB} end)(self)`];
 	}
 
 	const symbol = exp.getType().getSymbol();
@@ -63,9 +63,9 @@ export function transpilePropertyAccessExpression(state: TranspilerState, node: 
 				if (valDec.isConstEnum()) {
 					const value = valDec.getMemberOrThrow(propertyStr).getValue();
 					if (typeof value === "number") {
-						return `${value}`;
+						return [value.toString()];
 					} else if (typeof value === "string") {
-						return `"${value}"`;
+						return ['"', value, '"'];
 					}
 				}
 			} else if (ts.TypeGuards.isClassDeclaration(valDec)) {
@@ -80,7 +80,7 @@ export function transpilePropertyAccessExpression(state: TranspilerState, node: 
 		}
 	}
 
-	return `${expStr}.${propertyStr}`;
+	return [...expStr, ".", propertyStr];
 }
 
 export function transpileElementAccessExpression(state: TranspilerState, node: ts.ElementAccessExpression) {
@@ -101,25 +101,25 @@ export function transpileElementAccessExpression(state: TranspilerState, node: t
 	}
 
 	let offset = "";
-	let argExpStr: string;
+	const argExpStr = new Array<string>();
 	if (ts.TypeGuards.isNumericLiteral(argExp) && argExp.getText().indexOf("e") === -1) {
 		let value = argExp.getLiteralValue();
 		if (addOne) {
 			value++;
 		}
-		argExpStr = value.toString();
+		argExpStr.push(value.toString());
 	} else {
 		if (addOne) {
 			offset = " + 1";
 		}
-		argExpStr = transpileExpression(state, argExp) + offset;
+		argExpStr.push(...transpileExpression(state, argExp), offset);
 	}
 
 	if (ts.TypeGuards.isCallExpression(expNode) && isTupleType(expNode.getReturnType())) {
 		const expStr = transpileCallExpression(state, expNode, true);
 		checkNonAny(expNode);
 		checkNonAny(argExp);
-		return `(select(${argExpStr}, ${expStr}))`;
+		return ["(select(", ...argExpStr, ", ", ...expStr, "))"];
 	} else {
 		const expStr = transpileExpression(state, expNode);
 		checkNonAny(expNode);
@@ -135,9 +135,9 @@ export function transpileElementAccessExpression(state: TranspilerState, node: t
 			}
 		}
 		if (isArrayLiteral) {
-			return `(${expStr})[${argExpStr}]`;
+			return ["(", ...expStr, ")[", ...argExpStr, "]"];
 		} else {
-			return `${expStr}[${argExpStr}]`;
+			return [...expStr, "[", ...argExpStr, "]"];
 		}
 	}
 }

@@ -3,13 +3,14 @@ import { transpileExpression } from ".";
 import { TranspilerError, TranspilerErrorType } from "../errors/TranspilerError";
 import { TranspilerState } from "../TranspilerState";
 import { HasParameters } from "../types";
+import { addSeparatorAndFlatten } from "../utility";
 
 export function getParameterData(
 	state: TranspilerState,
-	paramNames: Array<string>,
-	initializers: Array<string>,
+	paramNames: Array<Array<string>>,
+	initializers: Array<Array<string>>,
 	node: HasParameters,
-	defaults?: Array<string>,
+	defaults?: Array<Array<string>>,
 ) {
 	for (const param of node.getParameters()) {
 		const child =
@@ -26,7 +27,7 @@ export function getParameterData(
 			);
 		}
 
-		let name: string;
+		let name: Array<string>;
 		if (ts.TypeGuards.isIdentifier(child)) {
 			if (param.getName() === "this") {
 				continue;
@@ -37,8 +38,8 @@ export function getParameterData(
 		}
 
 		if (param.isRestParameter()) {
-			paramNames.push("...");
-			initializers.push(`local ${name} = { ... };`);
+			paramNames.push(["..."]);
+			initializers.push(["local ", ...name, " = { ... };"]);
 		} else {
 			paramNames.push(name);
 		}
@@ -46,7 +47,7 @@ export function getParameterData(
 		const initial = param.getInitializer();
 		if (initial) {
 			const expStr = transpileExpression(state, initial);
-			const defaultValue = `if ${name} == nil then ${name} = ${expStr} end;`;
+			const defaultValue = ["if ", ...name, " == nil then ", ...name, " = ", ...expStr, " end;"];
 			if (defaults) {
 				defaults.push(defaultValue);
 			} else {
@@ -55,19 +56,23 @@ export function getParameterData(
 		}
 
 		if (param.hasScopeKeyword()) {
-			initializers.push(`self.${name} = ${name};`);
+			initializers.push(["self.", ...name, " = ", ...name, ";"]);
 		}
 
 		if (ts.TypeGuards.isArrayBindingPattern(child) || ts.TypeGuards.isObjectBindingPattern(child)) {
-			const names = new Array<string>();
-			const values = new Array<string>();
-			const preStatements = new Array<string>();
-			const postStatements = new Array<string>();
+			const names = new Array<Array<string>>();
+			const values = new Array<Array<string>>();
+			const preStatements = new Array<Array<string>>();
+			const postStatements = new Array<Array<string>>();
 			getBindingData(state, names, values, preStatements, postStatements, child, name);
 			preStatements.forEach(statement => initializers.push(statement));
-			const namesStr = names.join(", ");
-			const valuesStr = values.join(", ");
-			initializers.push(`local ${namesStr} = ${valuesStr};`);
+			initializers.push([
+				"local ",
+				...addSeparatorAndFlatten(names, ", "),
+				" = ",
+				...addSeparatorAndFlatten(values, ", "),
+				";",
+			]);
 			postStatements.forEach(statement => initializers.push(statement));
 		}
 	}
@@ -75,12 +80,12 @@ export function getParameterData(
 
 export function getBindingData(
 	state: TranspilerState,
-	names: Array<string>,
-	values: Array<string>,
-	preStatements: Array<string>,
-	postStatements: Array<string>,
+	names: Array<Array<string>>,
+	values: Array<Array<string>>,
+	preStatements: Array<Array<string>>,
+	postStatements: Array<Array<string>>,
 	bindingPattern: ts.Node,
-	parentId: string,
+	parentId: Array<string>,
 ) {
 	const strKeys = bindingPattern.getKind() === ts.SyntaxKind.ObjectBindingPattern;
 	const listItems = bindingPattern
@@ -95,12 +100,13 @@ export function getBindingData(
 				ts.TypeGuards.isPropertyAccessExpression(child),
 		);
 	let childIndex = 1;
+	let childIndexStr = childIndex.toString();
 	for (const item of listItems) {
 		/* istanbul ignore else */
 		if (ts.TypeGuards.isBindingElement(item)) {
 			const [child, op, pattern] = item.getChildren();
 			const childText = child.getText();
-			const key = strKeys ? `"${childText}"` : childIndex;
+			const key = strKeys ? ['"', childText, '"'] : [childIndexStr];
 
 			if (child.getKind() === ts.SyntaxKind.DotDotDotToken) {
 				throw new TranspilerError(
@@ -116,14 +122,14 @@ export function getBindingData(
 				(ts.TypeGuards.isArrayBindingPattern(pattern) || ts.TypeGuards.isObjectBindingPattern(pattern))
 			) {
 				const childId = state.getNewId();
-				preStatements.push(`local ${childId} = ${parentId}[${key}];`);
+				preStatements.push(["local ", ...childId, " = ", ...parentId, "[", ...key, "];"]);
 				getBindingData(state, names, values, preStatements, postStatements, pattern, childId);
 			} else if (ts.TypeGuards.isArrayBindingPattern(child)) {
 				const childId = state.getNewId();
-				preStatements.push(`local ${childId} = ${parentId}[${key}];`);
+				preStatements.push(["local ", ...childId, " = ", ...parentId, "[", ...key, "];"]);
 				getBindingData(state, names, values, preStatements, postStatements, child, childId);
 			} else if (ts.TypeGuards.isIdentifier(child)) {
-				let id: string;
+				let id: Array<string>;
 				if (pattern && pattern.getKind() === ts.SyntaxKind.Identifier) {
 					id = transpileExpression(state, pattern as ts.Expression);
 				} else {
@@ -132,23 +138,24 @@ export function getBindingData(
 				names.push(id);
 				if (op && op.getKind() === ts.SyntaxKind.EqualsToken) {
 					const value = transpileExpression(state, pattern as ts.Expression);
-					postStatements.push(`if ${id} == nil then ${id} = ${value} end;`);
+					postStatements.push(["if ", ...id, " == nil then ", ...id, " = ", ...value, " end;"]);
 				}
-				values.push(`${parentId}[${key}]`);
+				values.push([...parentId, "[", ...key, "]"]);
 			}
 		} else if (ts.TypeGuards.isIdentifier(item)) {
 			const id = transpileExpression(state, item as ts.Expression);
 			names.push(id);
-			values.push(`${parentId}[${childIndex}]`);
+			values.push([...parentId, "[", childIndexStr, "]"]);
 		} else if (ts.TypeGuards.isPropertyAccessExpression(item)) {
 			const id = transpileExpression(state, item as ts.Expression);
 			names.push(id);
-			values.push(`${parentId}[${childIndex}]`);
+			values.push([...parentId, "[", childIndexStr, "]"]);
 		} else if (ts.TypeGuards.isArrayLiteralExpression(item)) {
 			const childId = state.getNewId();
-			preStatements.push(`local ${childId} = ${parentId}[${childIndex}];`);
+			preStatements.push(["local ", ...childId, " = ", ...parentId, "[", childIndexStr, "];"]);
 			getBindingData(state, names, values, preStatements, postStatements, item, childId);
 		}
 		childIndex++;
+		childIndexStr = childIndex.toString();
 	}
 }

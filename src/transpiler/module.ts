@@ -5,7 +5,7 @@ import { CompilerError, CompilerErrorType } from "../errors/CompilerError";
 import { TranspilerError, TranspilerErrorType } from "../errors/TranspilerError";
 import { TranspilerState } from "../TranspilerState";
 import { isRbxService, isUsedAsType } from "../typeUtilities";
-import { isValidLuaIdentifier, stripExtensions } from "../utility";
+import { addSeparatorAndFlatten, isValidLuaIdentifier, stripExtensions } from "../utility";
 
 function isDefinitionALet(def: ts.DefinitionInfo<ts.ts.DefinitionInfo>) {
 	const parent = def.getNode().getParent();
@@ -55,12 +55,15 @@ function getRelativeImportPath(
 		prefix += ".Parent";
 	}
 
-	const importRoot = prefix + parts.filter(p => p === ".Parent").join("");
 	const importParts = parts.filter(p => p !== ".Parent");
-	const params = importRoot + (importParts.length > 0 ? `, "${importParts.join(`", "`)}"` : "");
+	const params = [
+		prefix,
+		parts.filter(p => p === ".Parent").join(""),
+		...(importParts.length > 0 ? [`, "`, importParts.join('", "'), `"`] : [""]),
+	];
 
 	state.usesTSLibrary = true;
-	return `TS.import(${params})`;
+	return ["TS.import(", ...params, ")"];
 }
 
 const moduleCache = new Map<string, string>();
@@ -107,7 +110,7 @@ function getImportPathFromFile(
 
 		state.usesTSLibrary = true;
 		const params = `TS.getModule("${moduleName}", script.Parent)` + parts.join("");
-		return `require(${params})`;
+		return ["require(", params, ")"];
 	} else {
 		const partition = state.syncInfo.find(part => part.dir.isAncestorOf(moduleFile));
 		if (!partition) {
@@ -149,11 +152,11 @@ function getImportPathFromFile(
 		}
 
 		state.usesTSLibrary = true;
-		return `TS.import(${params.join(", ")})`;
+		return ["TS.import(", params.join(", "), ")"];
 	}
 }
 
-export function transpileImportDeclaration(state: TranspilerState, node: ts.ImportDeclaration) {
+export function transpileImportDeclaration(state: TranspilerState, node: ts.ImportDeclaration): string[] {
 	const defaultImport = node.getDefaultImport();
 	const namespaceImport = node.getNamespaceImport();
 	const namedImports = node.getNamedImports();
@@ -166,10 +169,10 @@ export function transpileImportDeclaration(state: TranspilerState, node: ts.Impo
 		(!defaultImport || isUsedAsType(defaultImport)) &&
 		namedImports.every(namedImport => isUsedAsType(namedImport.getNameNode()))
 	) {
-		return "";
+		return [];
 	}
 
-	let luaPath: string;
+	let luaPath: Array<string>;
 	if (node.isModuleSpecifierRelative()) {
 		luaPath = getRelativeImportPath(
 			state,
@@ -192,9 +195,9 @@ export function transpileImportDeclaration(state: TranspilerState, node: ts.Impo
 		}
 	}
 
-	let result = "";
+	const result = new Array<string>();
 	if (isSideEffect) {
-		return `${luaPath};\n`;
+		return [...luaPath, ";\n"];
 	}
 
 	const lhs = new Array<string>();
@@ -214,21 +217,21 @@ export function transpileImportDeclaration(state: TranspilerState, node: ts.Impo
 
 		if (exportAssignments && exportAssignments.length === 1 && exportAssignments[0].isExportEquals()) {
 			// If the defaultImport is importing an `export = ` statement,
-			return `local ${defaultImportExp} = ${luaPath};\n`;
+			return ["local ", ...defaultImportExp, " = ", ...luaPath, ";\n"];
 		}
 
-		lhs.push(defaultImportExp);
-		rhs.push(`._default`);
+		lhs.push(...defaultImportExp);
+		rhs.push("._default");
 		unlocalizedImports.push("");
 	}
 
 	if (namespaceImport && !isUsedAsType(namespaceImport)) {
-		lhs.push(transpileExpression(state, namespaceImport));
+		lhs.push(...transpileExpression(state, namespaceImport));
 		rhs.push("");
 		unlocalizedImports.push("");
 	}
 
-	let rhsPrefix: string;
+	let rhsPrefix: Array<string>;
 	let hasVarNames = false;
 
 	namedImports
@@ -256,13 +259,13 @@ export function transpileImportDeclaration(state: TranspilerState, node: ts.Impo
 		rhsPrefix = luaPath;
 	} else {
 		rhsPrefix = state.getNewId();
-		result += `local ${rhsPrefix} = ${luaPath};\n`;
+		result.push("local ", ...rhsPrefix, " = ", ...luaPath, ";\n");
 	}
 
 	for (let i = 0; i < unlocalizedImports.length; i++) {
 		const alias = unlocalizedImports[i];
 		if (alias !== "") {
-			state.variableAliases.set(alias, rhsPrefix + rhs[i]);
+			state.variableAliases.set(alias, [...rhsPrefix, rhs[i]]);
 		}
 	}
 
@@ -273,7 +276,7 @@ export function transpileImportDeclaration(state: TranspilerState, node: ts.Impo
 		if (lhsStr === "Roact") {
 			state.hasRoactImport = true;
 		}
-		result += `local ${lhsStr} = ${rhsStr};\n`;
+		result.push("local ", lhsStr, " = ", rhsStr, ";\n");
 	}
 
 	return result;
@@ -282,10 +285,10 @@ export function transpileImportDeclaration(state: TranspilerState, node: ts.Impo
 export function transpileImportEqualsDeclaration(state: TranspilerState, node: ts.ImportEqualsDeclaration) {
 	const nameNode = node.getNameNode();
 	if (isUsedAsType(nameNode)) {
-		return "";
+		return [];
 	}
 
-	let luaPath: string;
+	let luaPath: Array<string>;
 	const moduleFile = node.getExternalModuleReferenceSourceFile();
 	if (moduleFile) {
 		if (node.isExternalModuleReferenceRelative()) {
@@ -312,11 +315,11 @@ export function transpileImportEqualsDeclaration(state: TranspilerState, node: t
 		state.hasRoactImport = true;
 	}
 
-	return state.indent + `local ${name} = ${luaPath};\n`;
+	return [state.indent, `local `, name, ` = `, ...luaPath, `;\n`];
 }
 
 export function transpileExportDeclaration(state: TranspilerState, node: ts.ExportDeclaration) {
-	let luaImportStr = "";
+	let luaImportStr = new Array<string>();
 	const moduleSpecifier = node.getModuleSpecifier();
 	if (moduleSpecifier) {
 		if (node.isModuleSpecifierRelative()) {
@@ -362,11 +365,11 @@ export function transpileExportDeclaration(state: TranspilerState, node: ts.Expo
 			state.isModule = true;
 			ancestorName = "_exports";
 		}
-		return state.indent + `TS.exportNamespace(${luaImportStr}, ${ancestorName});\n`;
+		return [state.indent, "TS.exportNamespace(", ...luaImportStr, "}, ", ancestorName, "});\n"];
 	} else {
 		const namedExports = node.getNamedExports().filter(namedExport => !isUsedAsType(namedExport.getNameNode()));
 		if (namedExports.length === 0) {
-			return "";
+			return [];
 		}
 
 		let ancestorName: string;
@@ -386,44 +389,44 @@ export function transpileExportDeclaration(state: TranspilerState, node: ts.Expo
 			const alias = aliasNode ? aliasNode.getText() : name;
 			checkReserved(alias, node);
 			lhs.push(alias);
-			if (luaImportStr !== "") {
+			if (luaImportStr.length > 0) {
 				rhs.push(`.${name}`);
 			} else {
-				rhs.push(state.getAlias(name));
+				rhs.push(...state.getAlias([name]));
 			}
 		});
 
-		let result = "";
-		let rhsPrefix = "";
-		const lhsPrefix = ancestorName + ".";
-		if (luaImportStr !== "") {
+		const result = new Array<string>();
+		let rhsPrefix = new Array<string>();
+		const lhsPrefix = [ancestorName, "."];
+		if (luaImportStr.length > 0) {
 			if (rhs.length <= 1) {
-				rhsPrefix = `${luaImportStr}`;
+				rhsPrefix = luaImportStr;
 			} else {
 				rhsPrefix = state.getNewId();
-				result += state.indent + `local ${rhsPrefix} = ${luaImportStr};\n`;
+				result.push(state.indent, `local `, ...rhsPrefix, ` = `, ...luaImportStr, `;\n`);
 			}
 		}
-		const lhsStr = lhs.map(v => lhsPrefix + v).join(", ");
-		const rhsStr = rhs.map(v => rhsPrefix + v).join(", ");
-		result += `${lhsStr} = ${rhsStr};\n`;
+		const lhsStr = lhs.map(v => [...lhsPrefix, v]);
+		const rhsStr = rhs.map(v => [...rhsPrefix, v]);
+		result.push(...addSeparatorAndFlatten(lhsStr, ", "), ` = `, ...addSeparatorAndFlatten(rhsStr, ", "), `;\n`);
 		return result;
 	}
 }
 
 export function transpileExportAssignment(state: TranspilerState, node: ts.ExportAssignment) {
-	let result = state.indent;
+	const result = [state.indent];
 	const exp = node.getExpression();
 	if (node.isExportEquals() && (!ts.TypeGuards.isIdentifier(exp) || !isUsedAsType(exp))) {
 		state.isModule = true;
 		const expStr = transpileExpression(state, exp);
-		result += `_exports = ${expStr};\n`;
+		result.push(`_exports = ${expStr};\n`);
 	} else {
 		const symbol = node.getSymbol();
 		if (symbol) {
 			if (symbol.getName() === "default") {
 				state.isModule = true;
-				result += "_exports._default = " + transpileExpression(state, exp) + ";\n";
+				result.push("_exports._default = ", ...(transpileExpression(state, exp) + ";\n"));
 			}
 		}
 	}

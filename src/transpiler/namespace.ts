@@ -18,34 +18,34 @@ function safeMapGet<T, R>(map: Map<T, R>, key: T, node: ts.Node) {
 
 export function transpileNamespaceDeclaration(state: TranspilerState, node: ts.NamespaceDeclaration) {
 	if (isTypeOnlyNamespace(node)) {
-		return "";
+		return [];
 	}
 	state.pushIdStack();
 	const name = node.getName();
 	checkReserved(name, node, true);
 	const parentNamespace = node.getFirstAncestorByKind(ts.SyntaxKind.ModuleDeclaration);
-	state.pushExport(name, node);
-	state.pushHoistStack(name);
-	let result = "";
+	state.pushExport([name], node);
+	state.pushHoistStack([name]);
+	const result = new Array<string>();
 	const id = state.getNewId();
 	const previousName = state.namespaceStack.get(name);
 	if (parentNamespace) {
 		const parentName = safeMapGet(state.namespaceStack, parentNamespace.getName(), node);
-		result += state.indent + `${name} = ${parentName}.${name} or {} do\n`;
+		result.push(state.indent, `${name} = ${parentName}.${name} or {} do\n`);
 	} else {
-		result += state.indent + `${name} = ${name} or {} do\n`;
+		result.push(state.indent, `${name} = ${name} or {} do\n`);
 	}
 	state.namespaceStack.set(name, id);
 	state.pushIndent();
-	result += state.indent + `local ${id} = ${name};\n`;
-	result += transpileStatementedNode(state, node);
+	result.push(state.indent, `local ${id} = ${name};\n`);
+	result.push(...transpileStatementedNode(state, node));
 	if (previousName) {
 		state.namespaceStack.set(name, previousName);
 	} else {
 		state.namespaceStack.delete(name);
 	}
 	state.popIndent();
-	result += state.indent + `end;\n`;
+	result.push(state.indent, `end;\n`);
 	state.popIdStack();
 	return result;
 }

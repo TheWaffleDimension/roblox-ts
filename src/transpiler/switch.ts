@@ -4,8 +4,8 @@ import { TranspilerState } from "../TranspilerState";
 
 export function transpileSwitchStatement(state: TranspilerState, node: ts.SwitchStatement) {
 	const expStr = transpileExpression(state, node.getExpression());
-	let result = "";
-	result += state.indent + `repeat\n`;
+	const result = new Array<string>();
+	result.push(state.indent, "repeat\n");
 	state.pushIndent();
 	state.pushIdStack();
 	const fallThroughVar = state.getNewId();
@@ -29,7 +29,7 @@ export function transpileSwitchStatement(state: TranspilerState, node: ts.Switch
 	}
 
 	if (anyFallThrough) {
-		result += state.indent + `local ${fallThroughVar} = false;\n`;
+		result.push(state.indent, "local ", ...fallThroughVar, " = false;\n");
 	}
 
 	let lastFallThrough = false;
@@ -38,8 +38,8 @@ export function transpileSwitchStatement(state: TranspilerState, node: ts.Switch
 		// add if statement if the clause is non-default
 		if (ts.TypeGuards.isCaseClause(clause)) {
 			const clauseExpStr = transpileExpression(state, clause.getExpression());
-			const fallThroughVarOr = lastFallThrough ? `${fallThroughVar} or ` : "";
-			result += state.indent + `if ${fallThroughVarOr}${expStr} == ( ${clauseExpStr} ) then\n`;
+			const fallThroughVarOr = lastFallThrough ? [...fallThroughVar, " or "] : [];
+			result.push(state.indent, "if ", ...fallThroughVarOr, ...expStr, " == ( ", ...clauseExpStr, " ) then\n");
 			state.pushIndent();
 		}
 
@@ -55,18 +55,18 @@ export function transpileSwitchStatement(state: TranspilerState, node: ts.Switch
 			(ts.TypeGuards.isReturnStatement(lastStatement) || ts.TypeGuards.isBreakStatement(lastStatement));
 		lastFallThrough = !endsInReturnOrBreakStatement;
 
-		result += transpileStatementedNode(state, clause);
+		result.push(...transpileStatementedNode(state, clause));
 
 		if (ts.TypeGuards.isCaseClause(clause)) {
 			if (!endsInReturnOrBreakStatement) {
-				result += state.indent + `${fallThroughVar} = true;\n`;
+				result.push(state.indent, ...fallThroughVar, " = true;\n");
 			}
 			state.popIndent();
-			result += state.indent + `end;\n`;
+			result.push(state.indent, "end;\n");
 		}
 	}
 	state.popIdStack();
 	state.popIndent();
-	result += state.indent + `until true;\n`;
+	result.push(state.indent, "until true;\n");
 	return result;
 }

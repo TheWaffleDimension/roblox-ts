@@ -11,7 +11,7 @@ export function transpileIdentifier(state: TranspilerState, node: ts.Identifier)
 
 	const replacement = replacements.get(name);
 	if (replacement) {
-		return replacement;
+		return [replacement];
 	}
 
 	checkReserved(name, node);
@@ -32,7 +32,7 @@ export function transpileIdentifier(state: TranspilerState, node: ts.Identifier)
 					if (parent.hasExportKeyword()) {
 						const declarationKind = parent.getDeclarationKind();
 						if (declarationKind === ts.VariableDeclarationKind.Let) {
-							return state.getExportContextName(parent) + "." + name;
+							return [state.getExportContextName(parent), ".", name];
 						}
 					}
 					break;
@@ -41,7 +41,7 @@ export function transpileIdentifier(state: TranspilerState, node: ts.Identifier)
 					if (parent !== definition.getParent()) {
 						const parentName = state.namespaceStack.get(parent.getName());
 						if (parentName) {
-							return parentName + "." + name;
+							return [parentName, ".", name];
 						}
 					}
 					break;
@@ -64,5 +64,5 @@ export function transpileIdentifier(state: TranspilerState, node: ts.Identifier)
 		}
 	}
 
-	return state.getAlias(name);
+	return [state.getAlias(name)];
 }

@@ -66,10 +66,10 @@ function getConstructor(node: ts.ClassDeclaration | ts.ClassExpression) {
 }
 
 function transpileClass(state: TranspilerState, node: ts.ClassDeclaration | ts.ClassExpression) {
-	const name = node.getName() || state.getNewId();
+	const name = node.getName() ? [node.getName()!] : state.getNewId();
 	const nameNode = node.getNameNode();
 	if (nameNode) {
-		checkReserved(name, nameNode, true);
+		checkReserved(name.join(""), nameNode, true);
 	}
 
 	if (ts.TypeGuards.isClassDeclaration(node)) {
@@ -99,7 +99,7 @@ function transpileClass(state: TranspilerState, node: ts.ClassDeclaration | ts.C
 	}
 
 	const extendExp = node.getExtends();
-	let baseClassName = "";
+	let baseClassName = new Array<string>();
 	let hasSuper = false;
 	if (extendExp) {
 		hasSuper = true;
@@ -108,34 +108,34 @@ function transpileClass(state: TranspilerState, node: ts.ClassDeclaration | ts.C
 
 	const isExpression = ts.TypeGuards.isClassExpression(node);
 
-	let result = "";
+	const result = new Array<string>();
 	if (isExpression) {
-		result += `(function()\n`;
+		result.push("(function()\n");
 	} else {
 		if (nameNode && shouldHoist(node, nameNode)) {
 			state.pushHoistStack(name);
 		} else {
-			result += state.indent + `local ${name};\n`;
+			result.push(state.indent, "local ", ...name, ";\n");
 		}
-		result += state.indent + `do\n`;
+		result.push(state.indent, "do\n");
 	}
 	state.pushIndent();
 
 	if (hasSuper) {
-		result += state.indent + `local super = ${baseClassName};\n`;
+		result.push(state.indent, "local super = ", ...baseClassName, ";\n");
 	}
 
 	let hasStaticMembers = false;
 
 	let prefix = "";
 	if (isExpression) {
-		prefix = `local `;
+		prefix = "local ";
 	}
 
 	if (hasSuper) {
-		result += state.indent + prefix + `${name} = setmetatable({`;
+		result.push(state.indent, prefix, ...name, " = setmetatable({");
 	} else {
-		result += state.indent + prefix + `${name} = {`;
+		result.push(state.indent, prefix, ...name, " = {");
 	}
 
 	state.pushIndent();
@@ -145,29 +145,29 @@ function transpileClass(state: TranspilerState, node: ts.ClassDeclaration | ts.C
 		.forEach(method => {
 			if (!hasStaticMembers) {
 				hasStaticMembers = true;
-				result += "\n";
+				result.push("\n");
 			}
-			result += transpileMethodDeclaration(state, method);
+			result.push(...transpileMethodDeclaration(state, method));
 		});
 
 	state.popIndent();
 
 	if (hasSuper) {
-		result += `${hasStaticMembers ? state.indent : ""}}, { __index = super });\n`;
+		result.push(hasStaticMembers ? state.indent : "", "}, { __index = super });\n");
 	} else {
-		result += `${hasStaticMembers ? state.indent : ""}};\n`;
+		result.push(hasStaticMembers ? state.indent : "", "};\n");
 	}
 
 	if (hasSuper) {
-		result += state.indent + `${name}.__index = setmetatable({`;
+		result.push(state.indent, ...name, ".__index = setmetatable({");
 	} else {
-		result += state.indent + `${name}.__index = {`;
+		result.push(state.indent, ...name, ".__index = {");
 	}
 
 	state.pushIndent();
 	let hasIndexMembers = false;
 
-	const extraInitializers = new Array<string>();
+	const extraInitializers = new Array<Array<string>>();
 	const instanceProps = node
 		.getInstanceProperties()
 		// @ts-ignore
@@ -177,18 +177,18 @@ function transpileClass(state: TranspilerState, node: ts.ClassDeclaration | ts.C
 	for (const prop of instanceProps) {
 		const propNameNode = prop.getNameNode();
 		if (propNameNode) {
-			let propStr: string;
+			let propStr: Array<string>;
 			if (ts.TypeGuards.isIdentifier(propNameNode)) {
 				const propName = propNameNode.getText();
-				propStr = "." + propName;
+				propStr = [".", propName];
 				checkMethodReserved(propName, prop);
 			} else if (ts.TypeGuards.isStringLiteral(propNameNode)) {
 				const expStr = transpileExpression(state, propNameNode);
 				checkMethodReserved(propNameNode.getLiteralText(), prop);
-				propStr = `[${expStr}]`;
+				propStr = ["[", ...expStr, "]"];
 			} else if (ts.TypeGuards.isNumericLiteral(propNameNode)) {
 				const expStr = transpileExpression(state, propNameNode);
-				propStr = `[${expStr}]`;
+				propStr = ["[", ...expStr, "]"];
 			} else {
 				// ComputedPropertyName
 				const computedExp = propNameNode.getExpression();
@@ -196,13 +196,19 @@ function transpileClass(state: TranspilerState, node: ts.ClassDeclaration | ts.C
 					checkMethodReserved(computedExp.getLiteralText(), prop);
 				}
 				const computedExpStr = transpileExpression(state, computedExp);
-				propStr = `[${computedExpStr}]`;
+				propStr = ["[", ...computedExpStr, "]"];
 			}
 
 			if (ts.TypeGuards.isInitializerExpressionableNode(prop)) {
 				const initializer = prop.getInitializer();
 				if (initializer) {
-					extraInitializers.push(`self${propStr} = ${transpileExpression(state, initializer)};\n`);
+					extraInitializers.push([
+						"self",
+						...propStr,
+						" = ",
+						...transpileExpression(state, initializer),
+						";\n",
+					]);
 				}
 			}
 		}
@@ -213,17 +219,17 @@ function transpileClass(state: TranspilerState, node: ts.ClassDeclaration | ts.C
 		.forEach(method => {
 			if (!hasIndexMembers) {
 				hasIndexMembers = true;
-				result += "\n";
+				result.push("\n");
 			}
-			result += transpileMethodDeclaration(state, method);
+			result.push(...transpileMethodDeclaration(state, method));
 		});
 
 	state.popIndent();
 
 	if (hasSuper) {
-		result += `${hasIndexMembers ? state.indent : ""}}, super);\n`;
+		result.push(hasIndexMembers ? state.indent : "", "}, super);\n");
 	} else {
-		result += `${hasIndexMembers ? state.indent : ""}};\n`;
+		result.push(hasIndexMembers ? state.indent : "", "};\n");
 	}
 
 	LUA_RESERVED_METAMETHODS.forEach(metamethod => {
@@ -235,36 +241,43 @@ function transpileClass(state: TranspilerState, node: ts.ClassDeclaration | ts.C
 					TranspilerErrorType.UndefinableMetamethod,
 				);
 			}
-			result +=
-				state.indent + `${name}.${metamethod} = function(self, ...) return self:${metamethod}(...); end;\n`;
+			result.push(
+				state.indent,
+				...name,
+				".",
+				metamethod,
+				" = function(self, ...) return self:",
+				metamethod,
+				"(...); end;\n",
+			);
 		}
 	});
 
 	if (!node.isAbstract()) {
-		result += state.indent + `${name}.new = function(...)\n`;
+		result.push(state.indent, ...name, ".new = function(...)\n");
 		state.pushIndent();
-		result += state.indent + `return ${name}.constructor(setmetatable({}, ${name}), ...);\n`;
+		result.push(state.indent, "return ", ...name, ".constructor(setmetatable({}, ", ...name, "), ...);\n");
 		state.popIndent();
-		result += state.indent + `end;\n`;
+		result.push(state.indent, "end;\n");
 	}
 
-	result += transpileConstructorDeclaration(state, name, getConstructor(node), extraInitializers, hasSuper);
+	result.push(...transpileConstructorDeclaration(state, name, getConstructor(node), extraInitializers, hasSuper));
 
 	for (const prop of node.getStaticProperties()) {
 		const propNameNode = prop.getNameNode();
 		if (propNameNode) {
-			let propStr: string;
+			let propStr: Array<string>;
 			if (ts.TypeGuards.isIdentifier(propNameNode)) {
 				const propName = propNameNode.getText();
-				propStr = "." + propName;
+				propStr = [".", propName];
 				checkMethodReserved(propName, prop);
 			} else if (ts.TypeGuards.isStringLiteral(propNameNode)) {
 				const expStr = transpileExpression(state, propNameNode);
 				checkMethodReserved(propNameNode.getLiteralText(), prop);
-				propStr = `[${expStr}]`;
+				propStr = ["[", ...expStr, "]"];
 			} else if (ts.TypeGuards.isNumericLiteral(propNameNode)) {
 				const expStr = transpileExpression(state, propNameNode);
-				propStr = `[${expStr}]`;
+				propStr = ["[", ...expStr, "]"];
 			} else {
 				// ComputedPropertyName
 				const computedExp = propNameNode.getExpression();
@@ -272,23 +285,16 @@ function transpileClass(state: TranspilerState, node: ts.ClassDeclaration | ts.C
 					checkMethodReserved(computedExp.getLiteralText(), prop);
 				}
 				const computedExpStr = transpileExpression(state, computedExp);
-				propStr = `[${computedExpStr}]`;
+				propStr = ["[", ...computedExpStr, "]"];
 			}
-
-			if (ts.TypeGuards.isInitializerExpressionableNode(prop)) {
-				const initializer = prop.getInitializer();
-				if (initializer) {
-					extraInitializers.push(`self${propStr} = ${transpileExpression(state, initializer)};\n`);
-				}
-			}
-			let propValue = "nil";
+			let propValue = ["nil"];
 			if (ts.TypeGuards.isInitializerExpressionableNode(prop)) {
 				const initializer = prop.getInitializer();
 				if (initializer) {
 					propValue = transpileExpression(state, initializer);
 				}
 			}
-			result += state.indent + `${name}${propStr} = ${propValue};\n`;
+			result.push(state.indent, ...name, ...propStr, " = ", ...propValue, ";\n");
 		}
 	}
 
@@ -311,38 +317,42 @@ function transpileClass(state: TranspilerState, node: ts.ClassDeclaration | ts.C
 
 	if (getters.length > 0 || ancestorHasGetters) {
 		if (getters.length > 0) {
-			let getterContent = "\n";
+			const getterContent = new Array<string>();
 			state.pushIndent();
 			for (const getter of getters) {
-				getterContent += transpileAccessorDeclaration(state, getter, getter.getName());
+				getterContent.push(...transpileAccessorDeclaration(state, getter, [getter.getName()]));
 			}
 			state.popIndent();
-			getterContent += state.indent;
+			getterContent.push(state.indent);
 			if (ancestorHasGetters) {
-				result +=
-					state.indent +
-					`${name}._getters = setmetatable({${getterContent}}, { __index = super._getters });\n`;
+				result.push(
+					state.indent,
+					...name,
+					"._getters = setmetatable({",
+					...getterContent,
+					"}, { __index = super._getters });\n",
+				);
 			} else {
-				result += state.indent + `${name}._getters = {${getterContent}};\n`;
+				result.push(state.indent, ...name, "._getters = {\n", ...getterContent, "};\n");
 			}
 		} else {
-			result += state.indent + `${name}._getters = super._getters;\n`;
+			result.push(state.indent, ...name, "._getters = super._getters;\n");
 		}
-		result += state.indent + `local __index = ${name}.__index;\n`;
-		result += state.indent + `${name}.__index = function(self, index)\n`;
+		result.push(state.indent, "local __index = ", ...name, ".__index;\n");
+		result.push(state.indent, ...name, ".__index = function(self, index)\n");
 		state.pushIndent();
-		result += state.indent + `local getter = ${name}._getters[index];\n`;
-		result += state.indent + `if getter then\n`;
+		result.push(state.indent, "local getter = ", ...name, "._getters[index];\n");
+		result.push(state.indent, "if getter then\n");
 		state.pushIndent();
-		result += state.indent + `return getter(self);\n`;
+		result.push(state.indent, "return getter(self);\n");
 		state.popIndent();
-		result += state.indent + `else\n`;
+		result.push(state.indent, "else\n");
 		state.pushIndent();
-		result += state.indent + `return __index[index];\n`;
+		result.push(state.indent, "return __index[index];\n");
 		state.popIndent();
-		result += state.indent + `end;\n`;
+		result.push(state.indent, "end;\n");
 		state.popIndent();
-		result += state.indent + `end;\n`;
+		result.push(state.indent, "end;\n");
 	}
 
 	const setters = node
@@ -363,46 +373,49 @@ function transpileClass(state: TranspilerState, node: ts.ClassDeclaration | ts.C
 	}
 	if (setters.length > 0 || ancestorHasSetters) {
 		if (setters.length > 0) {
-			let setterContent = "\n";
+			const setterContent = new Array<string>();
 			state.pushIndent();
 			for (const setter of setters) {
-				setterContent += transpileAccessorDeclaration(state, setter, setter.getName());
+				setterContent.push(...transpileAccessorDeclaration(state, setter, [setter.getName()]));
 			}
 			state.popIndent();
-			setterContent += state.indent;
+			setterContent.push(state.indent);
 			if (ancestorHasSetters) {
-				result +=
-					state.indent +
-					`${name}._setters = setmetatable({${setterContent}}, { __index = super._setters });\n`;
+				result.push(
+					state.indent + name,
+					"._setters = setmetatable({",
+					...setterContent,
+					"}, { __index = super._setters });\n",
+				);
 			} else {
-				result += state.indent + `${name}._setters = {${setterContent}};\n`;
+				result.push(state.indent, ...name, "._setters = {", ...setterContent, "};\n");
 			}
 		} else {
-			result += state.indent + `${name}._setters = super._setters;\n`;
+			result.push(state.indent, ...name, "._setters = super._setters;\n");
 		}
-		result += state.indent + `${name}.__newindex = function(self, index, value)\n`;
+		result.push(state.indent, ...name, ".__newindex = function(self, index, value)\n");
 		state.pushIndent();
-		result += state.indent + `local setter = ${name}._setters[index];\n`;
-		result += state.indent + `if setter then\n`;
+		result.push(state.indent, "local setter = ", ...name, "._setters[index];\n");
+		result.push(state.indent, "if setter then\n");
 		state.pushIndent();
-		result += state.indent + `setter(self, value);\n`;
+		result.push(state.indent, "setter(self, value);\n");
 		state.popIndent();
-		result += state.indent + `else\n`;
+		result.push(state.indent, "else\n");
 		state.pushIndent();
-		result += state.indent + `rawset(self, index, value);\n`;
+		result.push(state.indent, "rawset(self, index, value);\n");
 		state.popIndent();
-		result += state.indent + `end;\n`;
+		result.push(state.indent, "end;\n");
 		state.popIndent();
-		result += state.indent + `end;\n`;
+		result.push(state.indent, "end;\n");
 	}
 
 	if (isExpression) {
-		result += state.indent + `return ${name};\n`;
+		result.push(state.indent, "return ", ...name, ";\n");
 		state.popIndent();
-		result += state.indent + `end)()`;
+		result.push(state.indent, "end)()");
 	} else {
 		state.popIndent();
-		result += state.indent + `end;\n`;
+		result.push(state.indent, "end;\n");
 	}
 
 	return result;

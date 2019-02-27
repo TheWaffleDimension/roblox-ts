@@ -9,8 +9,16 @@ export function transpileConditionalExpression(state: TranspilerState, node: ts.
 	const falseStr = transpileExpression(state, node.getWhenFalse());
 	const trueType = node.getWhenTrue().getType();
 	if (isNullableType(trueType) || isBooleanType(trueType)) {
-		return `(${conditionStr} and function() return ${trueStr} end or function() return ${falseStr} end)()`;
+		return [
+			`(`,
+			...conditionStr,
+			` and function() return `,
+			...trueStr,
+			` end or function() return `,
+			...falseStr,
+			` end)()`,
+		];
 	} else {
-		return `(${conditionStr} and ${trueStr} or ${falseStr})`;
+		return [`(`, ...conditionStr, ` and `, ...trueStr, ` or `, ...falseStr, `)`];
 	}
 }

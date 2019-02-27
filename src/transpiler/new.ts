@@ -1,15 +1,16 @@
 import * as ts from "ts-morph";
-import { inheritsFromRoact, transpileCallArguments, transpileExpression } from ".";
+import { inheritsFromRoact, transpileExpression } from ".";
 import { TranspilerError, TranspilerErrorType } from "../errors/TranspilerError";
 import { TranspilerState } from "../TranspilerState";
 import { inheritsFrom } from "../typeUtilities";
 import { suggest } from "../utility";
+import { concatParams } from "./call";
 
 function transpileRawTable(state: TranspilerState, node: ts.NewExpression) {
 	if (ts.TypeGuards.isExpressionStatement(node.getParent())) {
-		return state.indent + "local _ = {}";
+		return [state.indent, "local _ = {}"];
 	} else {
-		return "{}";
+		return ["{}"];
 	}
 }
 
@@ -18,7 +19,6 @@ export function transpileNewExpression(state: TranspilerState, node: ts.NewExpre
 	const expressionType = expNode.getType();
 	const name = transpileExpression(state, expNode);
 	const args = node.getFirstChildByKind(ts.SyntaxKind.OpenParenToken) ? node.getArguments() : [];
-	const params = transpileCallArguments(state, args);
 
 	if (inheritsFromRoact(expressionType)) {
 		throw new TranspilerError(
@@ -36,7 +36,7 @@ export function transpileNewExpression(state: TranspilerState, node: ts.NewExpre
 	if (inheritsFrom(expressionType, "MapConstructor")) {
 		if (args.length > 0) {
 			state.usesTSLibrary = true;
-			return `TS.map_new(${params})`;
+			return ["TS.map_new(", ...concatParams(state, args), ")"];
 		} else {
 			return transpileRawTable(state, node);
 		}
@@ -45,15 +45,15 @@ export function transpileNewExpression(state: TranspilerState, node: ts.NewExpre
 	if (inheritsFrom(expressionType, "SetConstructor")) {
 		if (args.length > 0) {
 			state.usesTSLibrary = true;
-			return `TS.set_new(${params})`;
+			return ["TS.set_new(", ...concatParams(state, args), ")"];
 		} else {
 			return transpileRawTable(state, node);
 		}
 	}
 
 	if (inheritsFrom(expressionType, "WeakMapConstructor") || inheritsFrom(expressionType, "WeakSetConstructor")) {
-		return `setmetatable({}, { __mode = "k" })`;
+		return ['setmetatable({}, { __mode = "k" })'];
 	}
 
-	return `${name}.new(${params})`;
+	return [...name, ".new(", ...concatParams(state, args), ")"];
 }

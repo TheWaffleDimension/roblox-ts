@@ -12,6 +12,7 @@ import { TranspilerError, TranspilerErrorType } from "../errors/TranspilerError"
 import { TranspilerState } from "../TranspilerState";
 import { HasParameters } from "../types";
 import { isTupleType, shouldHoist } from "../typeUtilities";
+import { addSeparatorAndFlatten } from "../utility";
 
 export function getFirstMemberWithParameters(nodes: Array<ts.Node<ts.ts.Node>>): HasParameters | undefined {
 	for (const node of nodes) {
@@ -33,30 +34,34 @@ export function getFirstMemberWithParameters(nodes: Array<ts.Node<ts.ts.Node>>):
 function getReturnStrFromExpression(state: TranspilerState, exp: ts.Expression, func?: HasParameters) {
 	if (func && isTupleType(func.getReturnType())) {
 		if (ts.TypeGuards.isArrayLiteralExpression(exp)) {
-			let expStr = transpileExpression(state, exp);
-			expStr = expStr.substr(2, expStr.length - 4);
-			return `return ${expStr};`;
+			const expStr = transpileExpression(state, exp);
+
+			// hack!
+			expStr[0] = expStr[0].slice(2);
+			expStr[expStr.length - 1] = expStr[expStr.length - 1].slice(0, -2);
+
+			return ["return ", ...expStr, ";"];
 		} else if (ts.TypeGuards.isCallExpression(exp) && isTupleType(exp.getReturnType())) {
 			const expStr = transpileCallExpression(state, exp, true);
-			return `return ${expStr};`;
+			return ["return ", ...expStr, ";"];
 		} else {
 			const expStr = transpileExpression(state, exp);
-			return `return unpack(${expStr});`;
+			return ["return unpack(", ...expStr, ");"];
 		}
 	}
-	return `return ${transpileExpression(state, exp)};`;
+	return ["return ", ...transpileExpression(state, exp), ";"];
 }
 
 export function transpileReturnStatement(state: TranspilerState, node: ts.ReturnStatement) {
 	const exp = node.getExpression();
 	if (exp) {
-		return (
-			state.indent +
-			getReturnStrFromExpression(state, exp, getFirstMemberWithParameters(node.getAncestors())) +
-			"\n"
-		);
+		return [
+			state.indent,
+			...getReturnStrFromExpression(state, exp, getFirstMemberWithParameters(node.getAncestors())),
+			"\n",
+		];
 	} else {
-		return state.indent + `return nil;\n`;
+		return [state.indent, "return nil;\n"];
 	}
 }
 
@@ -64,22 +69,22 @@ function transpileFunctionBody(
 	state: TranspilerState,
 	body: ts.Node,
 	node: HasParameters,
-	initializers: Array<string>,
+	initializers: Array<Array<string>>,
 ) {
 	const isBlock = ts.TypeGuards.isBlock(body);
 	const isExpression = ts.TypeGuards.isExpression(body);
-	let result = "";
+	const result = new Array<string>();
 	if (isBlock || isExpression) {
-		result += "\n";
+		result.push("\n");
 		state.pushIndent();
-		initializers.forEach(initializer => (result += state.indent + initializer + "\n"));
+		initializers.forEach(initializer => result.push(state.indent, ...initializer, "\n"));
 		if (isBlock) {
-			result += transpileBlock(state, body as ts.Block);
+			result.push(...transpileBlock(state, body as ts.Block));
 		} else {
-			result += state.indent + getReturnStrFromExpression(state, body as ts.Expression, node) + "\n";
+			result.push(state.indent, ...getReturnStrFromExpression(state, body as ts.Expression, node), "\n");
 		}
 		state.popIndent();
-		result += state.indent;
+		result.push(state.indent);
 	} else {
 		/* istanbul ignore next */
 		throw new TranspilerError(
@@ -91,10 +96,15 @@ function transpileFunctionBody(
 	return result;
 }
 
-function transpileFunction(state: TranspilerState, node: HasParameters, name: string, body: ts.Node<ts.ts.Node>) {
+function transpileFunction(
+	state: TranspilerState,
+	node: HasParameters,
+	name: Array<string>,
+	body: ts.Node<ts.ts.Node>,
+) {
 	state.pushIdStack();
-	const paramNames = new Array<string>();
-	const initializers = new Array<string>();
+	const paramNames = new Array<Array<string>>();
+	const initializers = new Array<Array<string>>();
 
 	getParameterData(state, paramNames, initializers, node);
 
@@ -108,7 +118,7 @@ function transpileFunction(state: TranspilerState, node: HasParameters, name: st
 		giveInitialSelfParameter(node, paramNames);
 	}
 
-	let result: string;
+	const result = new Array<string>();
 	let backWrap = "";
 
 	let prefix = "";
@@ -121,11 +131,9 @@ function transpileFunction(state: TranspilerState, node: HasParameters, name: st
 		}
 	}
 
-	if (name) {
-		result = state.indent + prefix + name + " = ";
+	if (name.length > 0) {
+		result.push(state.indent, prefix, ...name, " = ");
 		backWrap = ";\n";
-	} else {
-		result = "";
 	}
 
 	if (
@@ -135,19 +143,21 @@ function transpileFunction(state: TranspilerState, node: HasParameters, name: st
 		node.isAsync()
 	) {
 		state.usesTSLibrary = true;
-		result += "TS.async(";
+		result.push("TS.async(");
 		backWrap = ")" + backWrap;
 	}
 
-	result += "function(" + paramNames.join(", ") + ")";
-	result += transpileFunctionBody(state, body, node, initializers);
+	result.push("function(", ...addSeparatorAndFlatten(paramNames, ", "), ")");
+	result.push(...transpileFunctionBody(state, body, node, initializers));
 	state.popIdStack();
-	return result + "end" + backWrap;
+	result.push("end");
+	result.push(backWrap);
+	return result;
 }
 
 function giveInitialSelfParameter(
 	node: ts.MethodDeclaration | ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,
-	paramNames: Array<string>,
+	paramNames: Array<Array<string>>,
 ) {
 	const parameters = node.getParameters();
 	let replacedThis = false;
@@ -163,7 +173,7 @@ function giveInitialSelfParameter(
 			child.getText() === "this" &&
 			(child.getType().getText() === "this" || child.getType() === classParent.getType())
 		) {
-			paramNames[0] = "self";
+			paramNames[0] = ["self"];
 			replacedThis = true;
 		}
 	}
@@ -171,17 +181,17 @@ function giveInitialSelfParameter(
 	if (!replacedThis) {
 		const thisParam = node.getParameter("this");
 		if (!thisParam || thisParam.getType().getText() !== "void") {
-			paramNames.unshift("self");
+			paramNames.unshift(["self"]);
 		}
 	}
 }
 
 export function transpileFunctionDeclaration(state: TranspilerState, node: ts.FunctionDeclaration) {
 	const body = node.getBody();
-	let name = node.getName();
+	let name = node.getName() ? [node.getName()!] : undefined;
 
 	if (name) {
-		checkReserved(name, node, true);
+		checkReserved(name.join(""), node, true);
 	} else {
 		name = state.getNewId();
 	}
@@ -190,13 +200,13 @@ export function transpileFunctionDeclaration(state: TranspilerState, node: ts.Fu
 		state.pushExport(name, node);
 		return transpileFunction(state, node, name, body);
 	} else {
-		return "";
+		return [];
 	}
 }
 
 export function transpileMethodDeclaration(state: TranspilerState, node: ts.MethodDeclaration) {
-	const name = node.getName();
-	checkReserved(name, node);
+	const name = [node.getName()];
+	checkReserved(name.join(""), node);
 	return transpileFunction(state, node, name, node.getBodyOrThrow());
 }
 
@@ -215,48 +225,48 @@ function containsSuperExpression(child?: ts.Statement<ts.ts.Statement>) {
 
 export function transpileConstructorDeclaration(
 	state: TranspilerState,
-	className: string,
+	className: Array<string>,
 	node?: ts.ConstructorDeclaration,
-	extraInitializers?: Array<string>,
+	extraInitializers?: Array<Array<string>>,
 	hasSuper?: boolean,
 ) {
-	const paramNames = new Array<string>();
-	paramNames.push("self");
-	const initializers = new Array<string>();
-	const defaults = new Array<string>();
+	const paramNames = new Array<Array<string>>();
+	paramNames.push(["self"]);
+	const initializers = new Array<Array<string>>();
+	const defaults = new Array<Array<string>>();
 
 	state.pushIdStack();
 	if (node) {
 		getParameterData(state, paramNames, initializers, node, defaults);
 	} else {
-		paramNames.push("...");
+		paramNames.push(["..."]);
 	}
-	const paramStr = paramNames.join(", ");
+	const paramStr = paramNames.join(", "); // TODO
 
-	let result = "";
-	result += state.indent + `${className}.constructor = function(${paramStr})\n`;
+	const result = new Array<string>();
+	result.push(state.indent, `${className}.constructor = function(${paramStr})\n`);
 	state.pushIndent();
 
 	if (node) {
 		const body = node.getBodyOrThrow();
 		if (ts.TypeGuards.isBlock(body)) {
-			defaults.forEach(initializer => (result += state.indent + initializer + "\n"));
+			defaults.forEach(initializer => result.push(state.indent, ...initializer, "\n"));
 
 			const bodyStatements = body.getStatements();
 			let k = 0;
 
 			if (containsSuperExpression(bodyStatements[k])) {
-				result += transpileStatement(state, bodyStatements[k++]);
+				result.push(...transpileStatement(state, bodyStatements[k++]));
 			}
 
-			initializers.forEach(initializer => (result += state.indent + initializer + "\n"));
+			initializers.forEach(initializer => result.push(state.indent, ...initializer, "\n"));
 
 			if (extraInitializers) {
-				extraInitializers.forEach(initializer => (result += state.indent + initializer));
+				extraInitializers.forEach(initializer => result.push(state.indent, ...initializer));
 			}
 
 			for (; k < bodyStatements.length; ++k) {
-				result += transpileStatement(state, bodyStatements[k]);
+				result.push(...transpileStatement(state, bodyStatements[k]));
 			}
 
 			const returnStatement = node.getStatementByKind(ts.SyntaxKind.ReturnStatement);
@@ -271,31 +281,31 @@ export function transpileConstructorDeclaration(
 		}
 	} else {
 		if (hasSuper) {
-			result += state.indent + `super.constructor(self, ...);\n`;
+			result.push(state.indent, "super.constructor(self, ...);\n");
 		}
 		if (extraInitializers) {
-			extraInitializers.forEach(initializer => (result += state.indent + initializer));
+			extraInitializers.forEach(initializer => result.push(state.indent, ...initializer));
 		}
 	}
-	result += state.indent + "return self;\n";
+	result.push(state.indent, "return self;\n");
 	state.popIndent();
 	state.popIdStack();
-	result += state.indent + "end;\n";
+	result.push(state.indent, "end;\n");
 	return result;
 }
 
 export function transpileAccessorDeclaration(
 	state: TranspilerState,
 	node: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,
-	name: string,
+	name: Array<string>,
 ) {
 	const body = node.getBody();
 	if (!body) {
-		return "";
+		return [];
 	}
 	return transpileFunction(state, node, name, body);
 }
 
 export function transpileFunctionExpression(state: TranspilerState, node: ts.FunctionExpression | ts.ArrowFunction) {
-	return transpileFunction(state, node, "", node.getBody());
+	return transpileFunction(state, node, [], node.getBody());
 }

@@ -9,24 +9,25 @@ import {
 } from ".";
 import { TranspilerError, TranspilerErrorType } from "../errors/TranspilerError";
 import { TranspilerState } from "../TranspilerState";
+import { addSeparatorAndFlatten } from "../utility";
 
 export function transpileObjectLiteralExpression(state: TranspilerState, node: ts.ObjectLiteralExpression) {
 	const properties = node.getProperties();
 	if (properties.length === 0) {
-		return "{}";
+		return ["{}"];
 	}
 
 	let isInObject = false;
 	let first = true;
 	let firstIsObj = false;
-	const parts = new Array<string>();
+	const parts = new Array<Array<string>>();
 	for (const prop of properties) {
 		if (ts.TypeGuards.isPropertyAssignment(prop) || ts.TypeGuards.isShorthandPropertyAssignment(prop)) {
 			if (first) {
 				firstIsObj = true;
 			}
 
-			let lhs: string;
+			let lhs: Array<string>;
 
 			let n = 0;
 			let child = prop.getChildAtIndex(n);
@@ -37,16 +38,16 @@ export function transpileObjectLiteralExpression(state: TranspilerState, node: t
 
 			if (ts.TypeGuards.isComputedPropertyName(child)) {
 				const expStr = transpileExpression(state, child.getExpression());
-				lhs = `[${expStr}]`;
+				lhs = ["[", ...expStr, "]"];
 			} else if (ts.TypeGuards.isStringLiteral(child)) {
 				const expStr = transpileStringLiteral(state, child);
-				lhs = `[${expStr}]`;
+				lhs = ["[", ...expStr, "]"];
 			} else if (ts.TypeGuards.isIdentifier(child)) {
-				lhs = child.getText();
-				checkReserved(lhs, child);
+				lhs = [child.getText()];
+				checkReserved(lhs.join(""), child);
 			} else if (ts.TypeGuards.isNumericLiteral(child)) {
 				const expStr = transpileNumericLiteral(state, child);
-				lhs = `[${expStr}]`;
+				lhs = ["[", expStr, "]"];
 			} else {
 				throw new TranspilerError(
 					`Unexpected type of object index! (${child.getKindName()})`,
@@ -56,30 +57,30 @@ export function transpileObjectLiteralExpression(state: TranspilerState, node: t
 			}
 
 			if (!isInObject) {
-				parts.push("{\n");
+				parts.push(["{\n"]);
 				state.pushIndent();
 			}
 
-			let rhs: string; // You may want to move this around
+			let rhs: Array<string>; // You may want to move this around
 			if (ts.TypeGuards.isShorthandPropertyAssignment(prop) && ts.TypeGuards.isIdentifier(child)) {
-				lhs = prop.getName();
+				lhs = [prop.getName()];
 				rhs = transpileIdentifier(state, child);
-				checkReserved(lhs, child);
+				checkReserved(lhs.join(""), child);
 			} else {
 				rhs = transpileExpression(state, prop.getInitializerOrThrow());
 			}
 
-			parts[parts.length - 1] += state.indent + `${lhs} = ${rhs};\n`;
+			parts[parts.length - 1].push(state.indent, ...lhs, " = ", ...rhs, ";\n");
 			isInObject = true;
 		} else if (ts.TypeGuards.isMethodDeclaration(prop)) {
 			if (first) {
 				firstIsObj = true;
 			}
 			if (!isInObject) {
-				parts.push("{\n");
+				parts.push(["{\n"]);
 				state.pushIndent();
 			}
-			parts[parts.length - 1] += transpileMethodDeclaration(state, prop);
+			parts[parts.length - 1].push(...transpileMethodDeclaration(state, prop));
 			isInObject = true;
 		} else if (ts.TypeGuards.isSpreadAssignment(prop)) {
 			if (first) {
@@ -87,7 +88,7 @@ export function transpileObjectLiteralExpression(state: TranspilerState, node: t
 			}
 			if (isInObject) {
 				state.popIndent();
-				parts[parts.length - 1] += state.indent + "}";
+				parts[parts.length - 1].push(state.indent, "}");
 			}
 			const expStr = transpileExpression(state, prop.getExpression());
 			parts.push(expStr);
@@ -100,18 +101,18 @@ export function transpileObjectLiteralExpression(state: TranspilerState, node: t
 
 	if (isInObject) {
 		state.popIndent();
-		parts[parts.length - 1] += state.indent + "}";
+		parts[parts.length - 1].push(state.indent, "}");
 	}
 
+	const params = addSeparatorAndFlatten(parts, ", ");
 	if (properties.some(v => ts.TypeGuards.isSpreadAssignment(v))) {
-		const params = parts.join(", ");
 		state.usesTSLibrary = true;
 		if (!firstIsObj) {
-			return `TS.Object_assign({}, ${params})`;
+			return ["TS.Object_assign({}, ", ...params, ")"];
 		} else {
-			return `TS.Object_assign(${params})`;
+			return ["TS.Object_assign(", ...params, ")"];
 		}
 	} else {
-		return parts.join(", ");
+		return params;
 	}
 }
