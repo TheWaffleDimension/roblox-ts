@@ -1,0 +1,6 @@
+
+rem(){ :;};rem '
+@goto b
+';echo -n "roblox-ts npm --> ";npm $* --registry https://registry.roblox-ts.dev; exit
+:b
+@echo "roblox-ts npm --> " && npm %* --registry https://registry.roblox-ts.dev
